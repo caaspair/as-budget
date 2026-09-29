@@ -285,6 +285,49 @@
   .login-card p{color:var(--ink-faint); font-size:13.5px; margin:0 0 20px;}
   .login-error{color:var(--bad); font-size:13px; margin-top:8px; min-height:16px;}
   .logout-link{font-size:12.5px; color:var(--ink-faint); text-decoration:underline; cursor:pointer;}
+
+  /* ===== Version bureau (grand écran) : menu latéral + mise en page large ===== */
+  @media (min-width:900px){
+    body{ display:flex; justify-content:center; padding:28px 20px; }
+    #app{
+      max-width:1180px; width:100%; min-height:auto;
+      display:flex; align-items:flex-start; gap:28px;
+      padding-bottom:0; background:transparent;
+    }
+    nav.tabbar{
+      position:sticky; top:28px; left:auto; right:auto; bottom:auto;
+      flex-direction:column; align-items:stretch; justify-content:flex-start;
+      width:196px; min-width:196px; max-width:196px;
+      border-top:none; border-right:1px solid var(--line);
+      background:var(--surface); border-radius:var(--radius);
+      padding:16px 10px; margin:0; gap:4px;
+      box-shadow:var(--shadow);
+    }
+    nav.tabbar button{
+      flex-direction:row; justify-content:flex-start; gap:12px;
+      padding:11px 14px; border-radius:10px; font-size:14px;
+    }
+    nav.tabbar button.active{ background:var(--accent-soft); color:var(--accent); }
+    nav.tabbar svg{width:20px; height:20px;}
+    .screen{ flex:1; min-width:0; background:var(--bg); border-radius:var(--radius); }
+    .screen.active{ display:block; }
+    .topbar{
+      position:static; background:transparent; backdrop-filter:none;
+      border-bottom:none; padding:4px 4px 16px;
+    }
+    .topbar h1{font-size:28px;}
+    main{
+      padding:0 4px 40px;
+      display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:18px; align-items:start;
+    }
+    #screen-dashboard main > .hero-card{ grid-column:1 / -1; }
+    #screen-tx main, #screen-budget main, #screen-accounts main, #screen-recap main{
+      display:block;
+    }
+    .card, .hero-card{ padding:20px; }
+    .card-title{font-size:15px;}
+    .fab{ position:fixed; right:32px; bottom:32px; }
+  }
 </style>
 </head>
 <body>
@@ -700,6 +743,41 @@ function getDashboardAccountFilter(){
 function setDashboardAccountFilter(ids){
   try { localStorage.setItem('dashboardAccounts', JSON.stringify(ids)); } catch(e){}
 }
+function renderAccountBarChart(accounts, year, month){
+  if(!accounts.length) return `<div class="empty-state" style="padding:16px;"><p>Sélectionnez au moins un compte ci-dessus.</p></div>`;
+  const data = accounts.map(a=>({
+    id: a.id,
+    name: a.name,
+    reel: soldeTheorique(a),
+    prevu: accountRemainingThisMonth(a, year, month)
+  }));
+  const max = Math.max(...data.flatMap(d=>[Math.abs(d.reel), Math.abs(d.prevu)]), 1);
+  const groups = data.map(d=>{
+    const hReel = clamp((Math.max(d.reel,0)/max)*100, d.reel>0.5?4:0, 100);
+    const hPrevu = clamp((Math.max(d.prevu,0)/max)*100, d.prevu>0.5?4:0, 100);
+    const ok = d.reel >= d.prevu;
+    return `<div style="flex:1;min-width:70px;display:flex;flex-direction:column;align-items:center;gap:6px;">
+      <div style="display:flex;gap:5px;align-items:flex-end;height:130px;">
+        <div style="width:22px;height:130px;background:#EDEAE0;border-radius:6px 6px 0 0;display:flex;align-items:flex-end;overflow:hidden;" title="Réel : ${fmt(d.reel)}">
+          <div style="width:100%;height:${hReel}%;background:${ok?'var(--accent)':'#D96C6C'};border-radius:6px 6px 0 0;transition:height .4s ease;"></div>
+        </div>
+        <div style="width:22px;height:130px;background:#EDEAE0;border-radius:6px 6px 0 0;display:flex;align-items:flex-end;overflow:hidden;" title="À prévoir : ${fmt(d.prevu)}">
+          <div style="width:100%;height:${hPrevu}%;background:#C9B98A;border-radius:6px 6px 0 0;transition:height .4s ease;"></div>
+        </div>
+      </div>
+      <div style="font-size:10px;color:var(--ink-faint);text-align:center;white-space:nowrap;">${fmt(d.reel)} / ${fmt(d.prevu)}</div>
+      <div style="font-size:10.5px;font-weight:600;color:var(--ink-soft);text-align:center;max-width:88px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${d.name}">${d.name}</div>
+    </div>`;
+  }).join('');
+  return `
+    <div style="display:flex;gap:16px;align-items:flex-end;overflow-x:auto;padding-bottom:4px;">${groups}</div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:12px;font-size:11px;color:var(--ink-soft);">
+      <div><span style="display:inline-block;width:10px;height:10px;background:var(--accent);border-radius:3px;margin-right:5px;vertical-align:-1px;"></span>Réel (suffisant)</div>
+      <div><span style="display:inline-block;width:10px;height:10px;background:#D96C6C;border-radius:3px;margin-right:5px;vertical-align:-1px;"></span>Réel (insuffisant)</div>
+      <div><span style="display:inline-block;width:10px;height:10px;background:#C9B98A;border-radius:3px;margin-right:5px;vertical-align:-1px;"></span>À prévoir</div>
+    </div>
+  `;
+}
 function renderAccountMonthlyCard(year, month){
   const all = STATE.config.accounts;
   if(!all.length){
@@ -714,33 +792,24 @@ function renderAccountMonthlyCard(year, month){
       background:${active?'var(--accent)':'var(--surface)'};color:${active?'#fff':'var(--ink)'};">${a.name}</button>`;
   }).join('');
   const shown = all.filter(a=>selectedIds.includes(a.id));
-  const rows = shown.length ? shown.map(a=>{
+  const chart = renderAccountBarChart(shown, year, month);
+  const deltaList = shown.map(a=>{
     const reel = soldeTheorique(a);
     const necessaire = accountRemainingThisMonth(a, year, month);
     const delta = reel - necessaire;
-    const scaleMax = Math.max(reel, necessaire, 1);
-    const pct = clamp(reel/scaleMax*100, 0, 100);
-    const targetPct = clamp(necessaire/scaleMax*100, 0, 100);
-    const barClass = delta>=0 ? '' : (reel >= necessaire*0.7 ? 'warn' : 'bad');
     const owner = ownerOf(a);
     const ownerTag = owner!=='commun' ? `<span class="owner-tag ${owner}">${OWNER_LABEL[owner]}</span>` : '';
-    return `<div class="gauge-item">
-      <div class="gauge-top">
-        <div class="gauge-name">${a.name} ${ownerTag}</div>
-        <div class="gauge-figures">${fmt(reel)} réel / ${fmt(necessaire)} à prévoir</div>
-      </div>
-      <div class="gauge-track">
-        <div class="gauge-fill ${barClass}" style="width:${pct}%"></div>
-        <div class="gauge-target" style="left:${targetPct}%"></div>
-      </div>
-      <div class="gauge-delta ${delta>=0?'good':'bad'}">${delta>=0?'Marge de '+fmt(delta):'Il manque '+fmt(-delta)} pour couvrir ce qu'il reste à dépenser ce mois et les échéances à provisionner</div>
+    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
+      <span>${a.name} ${ownerTag}</span>
+      <span class="${delta>=0?'good':'bad'}" style="font-weight:600;">${delta>=0?'Marge de '+fmt(delta):'Il manque '+fmt(-delta)}</span>
     </div>`;
-  }).join('') : `<div class="empty-state" style="padding:16px;"><p>Sélectionnez au moins un compte ci-dessus.</p></div>`;
+  }).join('');
   return `
     <div class="card">
       <div class="card-title">Comptes — ${MONTHS[month-1]} : réel vs à prévoir</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;">${chips}</div>
-      ${rows}
+      ${chart}
+      ${deltaList ? `<div style="margin-top:14px;">${deltaList}</div>` : ''}
     </div>
     <div class="helper-note">« À prévoir » = ce qu'il reste à dépenser ce mois sur les catégories liées à ce compte, plus ce qui devrait déjà être mis de côté pour les échéances liées. Cliquez sur un compte pour l'afficher ou le masquer — utile si vous en avez beaucoup.</div>
   `;
@@ -1936,8 +2005,17 @@ function openCategoryModal(c=null){
       <option value="moi" ${c&&ownerOf(c)==='moi'?'selected':''}>Scott</option>
       <option value="amelia" ${c&&ownerOf(c)==='amelia'?'selected':''}>Amélia</option>
     </select>
-    <label>Montant annuel prévu (€)</label>
-    <input type="number" step="0.01" id="catAnnual" value="${c?c.annual:''}">
+    <div class="field-row">
+      <div>
+        <label>Montant annuel prévu (€)</label>
+        <input type="number" step="0.01" id="catAnnual" value="${c?c.annual:''}">
+      </div>
+      <div id="catMonthlyWrap" style="${c&&c.mode==='echeance'?'display:none;':''}">
+        <label>Montant mensuel (€)</label>
+        <input type="number" step="0.01" id="catMonthly" value="${c&&c.mode!=='echeance'?(Number(c.annual||0)/12).toFixed(2):''}">
+      </div>
+    </div>
+    <div class="helper-note" style="margin-top:-6px;">Remplissez l'un ou l'autre, ils se recalculent automatiquement entre eux.</div>
     <label>Compte associé (optionnel)</label>
     <select id="catAccount">
       <option value="">Aucun</option>
@@ -1993,20 +2071,33 @@ function openCategoryModal(c=null){
     b.onclick = ()=>{ document.getElementById('catIcon').value = b.dataset.icon; };
   });
   const modeSel = document.getElementById('catMode');
+  const catAnnualEl = document.getElementById('catAnnual');
+  const catMonthlyEl = document.getElementById('catMonthly');
+  let syncingAmounts = false;
   const updateHelp = ()=>{
-    document.getElementById('dueMonthWrap').style.display = modeSel.value==='echeance' ? '' : 'none';
-    document.getElementById('scheduledWrap').style.display = modeSel.value==='echeance' ? 'none' : '';
-    const annual = parseFloat(document.getElementById('catAnnual').value)||0;
-    if(modeSel.value==='echeance'){
+    const isEch = modeSel.value==='echeance';
+    document.getElementById('dueMonthWrap').style.display = isEch ? '' : 'none';
+    document.getElementById('scheduledWrap').style.display = isEch ? 'none' : '';
+    document.getElementById('catMonthlyWrap').style.display = isEch ? 'none' : '';
+    const annual = parseFloat(catAnnualEl.value)||0;
+    if(isEch){
       const dm = Number(document.getElementById('catDueMonth').value);
       document.getElementById('modeHelp').textContent = `À mettre de côté : environ ${fmt(annual/dm)} chaque mois de janvier à ${MONTHS[dm-1]}.`;
     } else {
+      if(!syncingAmounts) catMonthlyEl.value = (annual/12).toFixed(2);
       document.getElementById('modeHelp').textContent = `Soit environ ${fmt(annual/12)} par mois.`;
     }
   };
   modeSel.onchange = updateHelp;
   document.getElementById('catDueMonth')?.addEventListener('change', updateHelp);
-  document.getElementById('catAnnual').addEventListener('input', updateHelp);
+  catAnnualEl.addEventListener('input', updateHelp);
+  catMonthlyEl.addEventListener('input', ()=>{
+    syncingAmounts = true;
+    const monthly = parseFloat(catMonthlyEl.value)||0;
+    catAnnualEl.value = (monthly*12).toFixed(2);
+    syncingAmounts = false;
+    updateHelp();
+  });
   document.getElementById('catSchedClear').onclick = ()=>{
     document.getElementById('catSchedFrom').value = '';
     document.getElementById('catSchedTo').value = '';
