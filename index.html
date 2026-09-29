@@ -700,16 +700,28 @@ function cibleCumulee(cat, date){
     }
     return total;
   } else {
-    const dueDay = dayOfYear(new Date(y, cat.dueMonth, 0)); // last day of dueMonth
-    if(doy >= dueDay) return annual;
-    return annual * (doy/dueDay);
+    // Échéance annuelle : lissée sur les 12 mois qui précèdent l'échéance (pas depuis janvier),
+    // pour que le montant à provisionner chaque mois soit le même quel que soit le mois d'échéance.
+    const {cycleStart, cycleEnd} = echeanceCycleBounds(cat.dueMonth, date);
+    if(date >= cycleEnd) return annual;
+    if(date <= cycleStart) return 0;
+    return annual * clamp((date - cycleStart) / (cycleEnd - cycleStart), 0, 1);
   }
+}
+// Bornes du cycle de 12 mois se terminant à la prochaine échéance (ou celle qui vient de passer) pour une
+// date donnée : ex. échéance en mars → cycle du 1er avril (année précédente) au 31 mars.
+function echeanceCycleBounds(dueMonth, date){
+  const y = date.getFullYear();
+  const dueEndThisYear = new Date(y, dueMonth, 0, 23, 59, 59, 999); // dernier instant du mois d'échéance, année en cours
+  const cycleEndYear = date > dueEndThisYear ? y+1 : y;
+  const cycleEnd = new Date(cycleEndYear, dueMonth, 0, 23, 59, 59, 999);
+  const cycleStart = new Date(cycleEndYear-1, dueMonth, 1);
+  return {cycleStart, cycleEnd};
 }
 function mensualiteConseillee(cat, year){
   const y = year || new Date().getFullYear();
   const annual = effectiveAnnual(cat, y);
-  if(cat.mode === 'mensuel') return annual/12;
-  return annual / cat.dueMonth;
+  return annual/12;
 }
 function monthKey(year, month){ return `${year}-${String(month).padStart(2,'0')}`; }
 function formatMonthKey(key){
@@ -2304,7 +2316,8 @@ function openCategoryModal(c=null){
     const annual = parseFloat(catAnnualEl.value)||0;
     if(isEch){
       const dm = Number(document.getElementById('catDueMonth').value);
-      document.getElementById('modeHelp').textContent = `À mettre de côté : environ ${fmt(annual/dm)} chaque mois de janvier à ${MONTHS[dm-1]}.`;
+      const prevMonthLabel = MONTHS[dm % 12];
+      document.getElementById('modeHelp').textContent = `Lissé sur les 12 mois précédents : à mettre de côté environ ${fmt(annual/12)} chaque mois, de ${prevMonthLabel} à ${MONTHS[dm-1]}.`;
     } else {
       if(!syncingAmounts) catMonthlyEl.value = (annual/12).toFixed(2);
       document.getElementById('modeHelp').textContent = `Soit environ ${fmt(annual/12)} par mois.`;
