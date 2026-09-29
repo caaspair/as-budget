@@ -1136,6 +1136,7 @@ function renderDashboard(){
   const depensesYTD = depCats.reduce((s,c)=>s+sommeCategorie(year,c.id,'depense',todayISOv),0);
 
   const gaugesHTML = groupAndRenderGauges(depCats, year, focusDate, todayISOv);
+  const forecastHTML = renderYearEndForecast(year, month);
   const bilanHTML = renderMonthlyBilanRows(year, month);
   const echeanceReconcileHTML = renderEcheanceReconciliationCard(year);
   const pendingTransfersHTML = renderPendingTransfersCard();
@@ -1189,6 +1190,7 @@ function renderDashboard(){
 
       <div class="card">
         <div class="card-title">Suivi par catégorie — cumulé au ${new Date().toLocaleDateString('fr-FR')}</div>
+        ${forecastHTML}
         ${gaugesHTML}
         <details style="margin-top:10px;">
           <summary style="cursor:pointer;font-size:11.5px;color:var(--ink-faint);">ℹ️ Comment lire ces jauges ?</summary>
@@ -1216,6 +1218,81 @@ function renderDashboard(){
   wireAccountMonthlyCardEvents(year, month);
 }
 
+// Ce qu'il reste à recevoir/dépenser sur les mois restants de l'année pour une catégorie mensuelle
+// (le mois en cours ne compte que pour la part pas encore réalisée, les mois suivants comptent en entier).
+function forecastRemainingMensuel(cat, year, month){
+  let total = 0;
+  for(let m=month; m<=12; m++){
+    const prevu = monthlyPrevu(cat, year, m);
+    if(m===month){
+      total += Math.max(0, prevu - monthlyReel(cat, year, m));
+    } else {
+      total += prevu;
+    }
+  }
+  return total;
+}
+function echeanceForecastRow(c, type, year){
+  const spent = sommeCategorie(year, c.id, type, todayISO());
+  const remaining = Math.max(0, effectiveAnnual(c, year) - spent);
+  return `<div style="display:flex;justify-content:space-between;align-items:center;font-size:12.5px;padding:5px 0;border-bottom:1px solid var(--line);">
+    <span>${iconChip(c)}${c.name} <span style="color:var(--ink-faint);">— échéance ${MONTHS[c.dueMonth-1]}</span></span>
+    <span class="${type==='revenu'?'good':'bad'}" style="font-weight:600;">${type==='revenu'?'+':'−'}${fmt(remaining)}</span>
+  </div>`;
+}
+function renderYearEndForecast(year, month){
+  const today = new Date();
+  if(year !== today.getFullYear()) return ''; // le prévisionnel n'a de sens que pour l'année en cours
+  const allDep = STATE.config.categories.filter(c=>c.type==='depense');
+  const allRev = STATE.config.categories.filter(c=>c.type==='revenu');
+  const revMensuel = allRev.filter(c=>c.mode==='mensuel');
+  const revEcheance = allRev.filter(c=>c.mode==='echeance');
+  const depMensuel = allDep.filter(c=>c.mode==='mensuel');
+  const depEcheance = allDep.filter(c=>c.mode==='echeance');
+
+  const revRealized = allRev.reduce((s,c)=> s + sommeCategorie(year, c.id, 'revenu', todayISO()), 0);
+  const depRealized = allDep.reduce((s,c)=> s + sommeCategorie(year, c.id, 'depense', todayISO()), 0);
+
+  const revRemainingMensuel = revMensuel.reduce((s,c)=> s + forecastRemainingMensuel(c, year, month), 0);
+  const depRemainingMensuel = depMensuel.reduce((s,c)=> s + forecastRemainingMensuel(c, year, month), 0);
+
+  const orderByUpcoming = c => (c.dueMonth < month ? c.dueMonth+12 : c.dueMonth);
+  const revEcheanceRemaining = revEcheance
+    .filter(c=> effectiveAnnual(c,year) - sommeCategorie(year,c.id,'revenu',todayISO()) > 0.5)
+    .sort((a,b)=> orderByUpcoming(a)-orderByUpcoming(b));
+  const depEcheanceRemaining = depEcheance
+    .filter(c=> effectiveAnnual(c,year) - sommeCategorie(year,c.id,'depense',todayISO()) > 0.5)
+    .sort((a,b)=> orderByUpcoming(a)-orderByUpcoming(b));
+  const revEcheanceTotal = revEcheanceRemaining.reduce((s,c)=> s+Math.max(0, effectiveAnnual(c,year)-sommeCategorie(year,c.id,'revenu',todayISO())), 0);
+  const depEcheanceTotal = depEcheanceRemaining.reduce((s,c)=> s+Math.max(0, effectiveAnnual(c,year)-sommeCategorie(year,c.id,'depense',todayISO())), 0);
+
+  const revForecast = revRealized + revRemainingMensuel + revEcheanceTotal;
+  const depForecast = depRealized + depRemainingMensuel + depEcheanceTotal;
+  const soldeForecast = revForecast - depForecast;
+
+  const rows = revEcheanceRemaining.map(c=>echeanceForecastRow(c,'revenu',year)).join('')
+    + depEcheanceRemaining.map(c=>echeanceForecastRow(c,'depense',year)).join('');
+
+  return `
+    <div class="forecast-yearend" style="margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--line);">
+      <div style="display:flex;justify-content:space-between;align-items:flex-end;flex-wrap:wrap;gap:10px;">
+        <div>
+          <div style="font-size:12px;color:var(--ink-faint);">Prévisionnel au 31 décembre ${year}</div>
+          <div class="${soldeForecast>=0?'good':'bad'}" style="font-size:24px;font-weight:700;">${fmtSigned(soldeForecast)}</div>
+        </div>
+        <div style="display:flex;gap:18px;font-size:12.5px;">
+          <div><div style="color:var(--ink-faint);">Revenus prévus (total)</div><div class="good" style="font-weight:600;">${fmt(revForecast)}</div></div>
+          <div><div style="color:var(--ink-faint);">Dépenses prévues (total)</div><div class="bad" style="font-weight:600;">${fmt(depForecast)}</div></div>
+        </div>
+      </div>
+      ${rows ? `<div style="margin-top:12px;"><div class="mini-group-label">Échéances restant à venir</div>${rows}</div>` : ''}
+      <details style="margin-top:8px;">
+        <summary style="cursor:pointer;font-size:11.5px;color:var(--ink-faint);">ℹ️ Comment c'est calculé ?</summary>
+        <div class="helper-note" style="margin-top:6px;">Ce qui a déjà été reçu/dépensé cette année, plus ce qui reste prévu sur les mois restants pour les catégories mensuelles, plus les échéances annuelles qui n'ont pas encore eu lieu (ou pas encore réglées).</div>
+      </details>
+    </div>
+  `;
+}
 function groupAndRenderGauges(depCats, year, focusDate, todayISOv){
   const groups = {};
   depCats.forEach(c=>{ (groups[c.group] = groups[c.group]||[]).push(c); });
