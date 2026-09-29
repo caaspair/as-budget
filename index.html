@@ -349,6 +349,7 @@
       display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:18px; align-items:start;
     }
     #screen-dashboard main > .hero-card{ grid-column:1 / -1; }
+    #screen-dashboard main > .accounts-card{ grid-column:1 / -1; }
     #screen-tx main, #screen-budget main, #screen-accounts main, #screen-recap main{
       display:block;
     }
@@ -832,7 +833,7 @@ function renderAccountBarChart(accounts, year, month){
 function renderAccountMonthlyCard(year, month){
   const all = STATE.config.accounts;
   if(!all.length){
-    return `<div class="card"><div class="card-title">Comptes — ${MONTHS[month-1]}</div><div class="empty-state" style="padding:16px;"><p>Aucun compte pour l'instant.</p></div></div>`;
+    return `<div class="card accounts-card"><div class="card-title">Comptes — ${MONTHS[month-1]}</div><div class="empty-state" style="padding:16px;"><p>Aucun compte pour l'instant.</p></div></div>`;
   }
   const filter = getDashboardAccountFilter();
   const selectedIds = (filter && filter.length) ? filter : all.map(a=>a.id);
@@ -856,7 +857,7 @@ function renderAccountMonthlyCard(year, month){
     </div>`;
   }).join('');
   return `
-    <div class="card">
+    <div class="card accounts-card">
       <div class="card-title">Comptes — ${MONTHS[month-1]} : réel vs à prévoir</div>
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;">${chips}</div>
       ${chart}
@@ -2024,12 +2025,18 @@ function renderBudget(){
       <button class="btn btn-primary btn-block" id="addCatBtn" style="margin-bottom:16px;">+ Ajouter une catégorie</button>
 
       ${['moi','amelia','commun'].filter(o=>revGroups[o].length).map(o=>`
-        <div class="group-header">${revGroupLabel[o]}</div>
+        <div class="group-header" style="display:flex;justify-content:space-between;align-items:baseline;">
+          <span>${revGroupLabel[o]}</span>
+          <span style="font-size:12.5px;font-weight:600;color:var(--ink-faint);">Prévu : ${fmt(groupPlannedTotal(revGroups[o]))}</span>
+        </div>
         <div class="card">${revGroups[o].map(c=>budgetRow(c)).join('')}</div>
       `).join('') || `<div class="group-header">Revenus</div>${emptyRow()}`}
 
       ${Object.keys(groups).map(g=>`
-        <div class="group-header">${g}</div>
+        <div class="group-header" style="display:flex;justify-content:space-between;align-items:baseline;">
+          <span>${g}</span>
+          <span style="font-size:12.5px;font-weight:600;color:var(--ink-faint);">Prévu : ${fmt(groupPlannedTotal(groups[g]))}</span>
+        </div>
         <div class="card">${groups[g].map(c=>budgetRow(c)).join('')}</div>
       `).join('')}
     </main>
@@ -2043,6 +2050,13 @@ function renderBudget(){
   });
 }
 function emptyRow(){ return `<div class="empty-state" style="padding:20px;"><p>Aucune catégorie.</p></div>`; }
+function catPlannedAmount(c){
+  const y = new Date().getFullYear();
+  const isPonctuel = c.mode==='mensuel' && Number(c.annual||0)===0 && c.scheduledChange && c.scheduledChange.toKey;
+  if(isPonctuel) return c.scheduledChange.amount*monthsBetweenInclusive(c.scheduledChange.fromKey,c.scheduledChange.toKey);
+  return effectiveAnnual(c, y);
+}
+function groupPlannedTotal(list){ return list.reduce((s,c)=>s+catPlannedAmount(c),0); }
 function budgetRow(c){
   const owner = ownerOf(c);
   const y = new Date().getFullYear();
@@ -2058,7 +2072,7 @@ function budgetRow(c){
       <div class="tx-cat">${iconChip(c)}${c.name} ${owner!=='commun'?`<span class="owner-tag ${owner}">${OWNER_LABEL[owner]}</span>`:''}${tag}</div>
       <div class="tx-meta">${meta}</div>
     </div>
-    <div class="tx-amt">${fmt(isPonctuel ? c.scheduledChange.amount*monthsBetweenInclusive(c.scheduledChange.fromKey,c.scheduledChange.toKey) : eff)}</div>
+    <div class="tx-amt">${fmt(catPlannedAmount(c))}</div>
   </div>`;
 }
 function openCategoryModal(c=null){
