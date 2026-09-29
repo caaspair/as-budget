@@ -1216,6 +1216,7 @@ function renderDashboard(){
   wireMonthlyBilanEvents(year, month);
   wirePendingTransferEvents();
   wireAccountMonthlyCardEvents(year, month);
+  wireGaugeItemEvents(year, month);
 }
 
 // Ce qu'il reste à recevoir/dépenser sur les mois restants de l'année pour une catégorie mensuelle
@@ -1293,6 +1294,41 @@ function renderYearEndForecast(year, month){
     </div>
   `;
 }
+function renderCategoryDetailModal(catId, year, month){
+  const c = STATE.config.categories.find(x=>x.id===catId);
+  if(!c) return;
+  const depense = sommeCategorie(year, c.id, 'depense', todayISO());
+  const annual = effectiveAnnual(c, year);
+  const remaining = c.mode==='mensuel'
+    ? forecastRemainingMensuel(c, year, month)
+    : Math.max(0, annual - depense);
+  const cible = cibleCumulee(c, new Date());
+  const delta = cible - depense;
+  openModal(c.name, `
+    <div style="display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;">
+      <div>
+        <div style="font-size:12px;color:var(--ink-faint);">Déjà dépensé en ${year}</div>
+        <div style="font-size:22px;font-weight:700;">${fmt(depense)}</div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-size:12px;color:var(--ink-faint);">Reste à dépenser cette année</div>
+        <div style="font-size:22px;font-weight:700;">${fmt(remaining)}</div>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--ink-soft);border-top:1px solid var(--line);margin-top:14px;padding-top:10px;">
+      <span>Prévu sur l'année</span><span style="font-weight:600;">${fmt(annual)}</span>
+    </div>
+    <div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--ink-soft);margin-top:6px;">
+      <span>Cible à ce jour (${new Date().toLocaleDateString('fr-FR')})</span><span style="font-weight:600;">${fmt(cible)}</span>
+    </div>
+    <div class="gauge-delta ${delta>=0?'good':'bad'}" style="margin-top:10px;">${delta>=0?'En avance de '+fmt(delta):'Dépassement de '+fmt(-delta)} vs. cible à ce jour</div>
+  `);
+}
+function wireGaugeItemEvents(year, month){
+  document.querySelectorAll('.cat-detail-click').forEach(el=>{
+    el.onclick = ()=> renderCategoryDetailModal(el.dataset.catId, year, month);
+  });
+}
 function groupAndRenderGauges(depCats, year, focusDate, todayISOv){
   const groups = {};
   depCats.forEach(c=>{ (groups[c.group] = groups[c.group]||[]).push(c); });
@@ -1308,7 +1344,7 @@ function groupAndRenderGauges(depCats, year, focusDate, todayISOv){
       const delta = cible - depense; // positif = on track / en avance, négatif = dépassement
       const barClass = depense <= cible*1.03 ? '' : (depense <= cible*1.2 ? 'warn' : 'bad');
       html += `
-        <div class="gauge-item gauge-card">
+        <div class="gauge-item gauge-card cat-detail-click" data-cat-id="${c.id}" style="cursor:pointer;">
           <div class="gauge-top">
             <div class="gauge-name">${iconChip(c)}${c.name} <span class="gauge-tag ${c.mode}">${c.mode==='mensuel'?'mensuel':'échéance '+MONTHS[c.dueMonth-1].slice(0,3)}</span></div>
             <div class="gauge-figures">${fmt(depense)} / ${fmt(annual)}</div>
