@@ -2051,8 +2051,9 @@ function renderBudget(){
   const totalDep = dep.reduce((s,c)=>s+effectiveAnnual(c,new Date().getFullYear()),0);
   const totalRev = rev.reduce((s,c)=>s+effectiveAnnual(c,new Date().getFullYear()),0);
 
-  const groups = {};
-  dep.forEach(c=>(groups[c.group]=groups[c.group]||[]).push(c));
+  const depByOwner = {commun:[], moi:[], amelia:[]};
+  dep.forEach(c=> (depByOwner[ownerOf(c)] = depByOwner[ownerOf(c)]||[]).push(c));
+  const depOwnerLabel = {commun:'Dépenses communes', moi:'Dépenses de Scott', amelia:'Dépenses d’Amélia'};
   const revGroups = {moi:[], amelia:[], commun:[]};
   rev.forEach(c=> (revGroups[ownerOf(c)] = revGroups[ownerOf(c)]||[]).push(c));
   const revGroupLabel = {moi:'Revenus Scott', amelia:'Revenus d’Amélia', commun:'Revenus communs'};
@@ -2081,13 +2082,23 @@ function renderBudget(){
         <div class="card">${revGroups[o].map(c=>budgetRow(c)).join('')}</div>
       `).join('') || `<div class="group-header">Revenus</div>${emptyRow()}`}
 
-      ${Object.keys(groups).map(g=>`
-        <div class="group-header" style="display:flex;justify-content:space-between;align-items:baseline;">
-          <span>${g}</span>
-          <span style="font-size:12.5px;font-weight:600;color:var(--ink-faint);">Prévu : ${fmt(groupPlannedTotal(groups[g]))}</span>
-        </div>
-        <div class="card">${groups[g].map(c=>budgetRow(c)).join('')}</div>
-      `).join('')}
+      ${['commun','moi','amelia'].filter(o=>depByOwner[o].length).map(o=>{
+        const subGroups = {};
+        depByOwner[o].forEach(c=>(subGroups[c.group]=subGroups[c.group]||[]).push(c));
+        return `
+          <div class="owner-section-title" style="margin-top:26px;padding-bottom:4px;border-bottom:2px solid var(--line);display:flex;justify-content:space-between;align-items:baseline;">
+            <span style="font-size:16px;font-weight:700;">${depOwnerLabel[o]}</span>
+            <span style="font-size:13px;font-weight:600;color:var(--ink-faint);">Prévu : ${fmt(groupPlannedTotal(depByOwner[o]))}</span>
+          </div>
+          ${Object.keys(subGroups).map(g=>`
+            <div class="group-header" style="display:flex;justify-content:space-between;align-items:baseline;">
+              <span>${g}</span>
+              <span style="font-size:12.5px;font-weight:600;color:var(--ink-faint);">Prévu : ${fmt(groupPlannedTotal(subGroups[g]))}</span>
+            </div>
+            <div class="card">${subGroups[g].map(c=>budgetRow(c)).join('')}</div>
+          `).join('')}
+        `;
+      }).join('') || `<div class="group-header">Dépenses</div>${emptyRow()}`}
     </main>
   `;
   document.getElementById('addCatBtn').onclick = ()=> openCategoryModal();
@@ -2116,10 +2127,15 @@ function budgetRow(c){
   const meta = isPonctuel
     ? `Ponctuel · ${fmt(c.scheduledChange.amount)}/mois de ${c.scheduledChange.fromKey} à ${c.scheduledChange.toKey}`
     : (c.mode==='mensuel' ? 'Lissé sur l’année · '+fmt(eff/12)+'/mois' : 'Échéance en '+MONTHS[c.dueMonth-1]+' · à provisionner '+fmt(mensualiteConseillee(c,y))+'/mois');
+  const acc = c.accountId ? accById(c.accountId) : null;
+  const accountMeta = acc
+    ? `<div class="tx-meta" style="margin-top:2px;color:var(--accent);">🔗 ${acc.name}</div>`
+    : `<div class="tx-meta" style="margin-top:2px;color:var(--ink-faint);">⚠️ Aucun compte associé</div>`;
   return `<div class="tx-row cat-row" data-id="${c.id}" style="cursor:pointer;">
     <div class="tx-mid">
       <div class="tx-cat">${iconChip(c)}${c.name} ${owner!=='commun'?`<span class="owner-tag ${owner}">${OWNER_LABEL[owner]}</span>`:''}${tag}</div>
       <div class="tx-meta">${meta}</div>
+      ${accountMeta}
     </div>
     <div class="tx-amt">${fmt(catPlannedAmount(c))}</div>
   </div>`;
