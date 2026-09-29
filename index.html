@@ -172,6 +172,34 @@
   }
   .group-header:first-child{margin-top:0;}
 
+  /* Grille de cartes pour le suivi par catégorie */
+  .gauges-grid{
+    display:grid; grid-template-columns:repeat(auto-fill, minmax(210px,1fr)); gap:10px;
+  }
+  .gauge-item.gauge-card{
+    background:var(--surface-soft); border:1px solid var(--line); border-radius:12px;
+    padding:12px 14px; margin:0;
+  }
+
+  /* Bilan du mois : colonnes Revenus / Dépenses */
+  .bilan-grid{display:flex; gap:22px; flex-wrap:wrap;}
+  .bilan-col{flex:1; min-width:230px;}
+  .bilan-col-title{
+    font-weight:700; font-size:12.5px; text-transform:uppercase; letter-spacing:.05em;
+    margin-bottom:8px;
+  }
+  .bilan-col-title.good{color:var(--good);}
+  .bilan-col-title.bad{color:var(--bad);}
+  .mini-group-label{
+    font-size:11px; font-weight:700; color:var(--ink-faint); text-transform:uppercase;
+    letter-spacing:.05em; margin:10px 0 4px;
+  }
+  .mini-group-label:first-child{margin-top:0;}
+  @media (max-width:600px){ .bilan-grid{flex-direction:column; gap:6px;} }
+
+  details > summary{ list-style:none; }
+  details > summary::-webkit-details-marker{ display:none; }
+
   /* Buttons */
   .btn{
     border:none; border-radius:12px; padding:12px 16px; font-family:'Inter'; font-weight:600;
@@ -641,7 +669,25 @@ function cibleCumulee(cat, date){
   const doy = dayOfYear(date);
   const totalDays = daysInYear(y);
   if(cat.mode === 'mensuel'){
-    return annual * (doy/totalDays);
+    // Sans changement programmé / dépense temporaire : proration simple sur l'année.
+    if(!cat.scheduledChange || !cat.scheduledChange.fromKey) return annual * (doy/totalDays);
+    // Avec une période définie (dépense temporaire ou changement daté) : on additionne mois par mois,
+    // en utilisant le montant de la période quand elle est active, sinon le montant de base.
+    let total = 0;
+    for(let m=1; m<=12; m++){
+      const monthStart = new Date(y, m-1, 1);
+      if(monthStart > date) break;
+      const key = monthKey(y, m);
+      const amt = isScheduledChangeActive(cat, key) ? Number(cat.scheduledChange.amount) : annual/12;
+      const isCurrentMonth = date.getFullYear()===y && date.getMonth()+1===m;
+      if(isCurrentMonth){
+        const daysInMonth = new Date(y, m, 0).getDate();
+        total += amt * (date.getDate()/daysInMonth);
+      } else {
+        total += amt;
+      }
+    }
+    return total;
   } else {
     const dueDay = dayOfYear(new Date(y, cat.dueMonth, 0)); // last day of dueMonth
     if(doy >= dueDay) return annual;
@@ -655,6 +701,11 @@ function mensualiteConseillee(cat, year){
   return annual / cat.dueMonth;
 }
 function monthKey(year, month){ return `${year}-${String(month).padStart(2,'0')}`; }
+function monthsBetweenInclusive(fromKey, toKey){
+  const [fy,fm] = fromKey.split('-').map(Number);
+  const [ty,tm] = toKey.split('-').map(Number);
+  return (ty-fy)*12 + (tm-fm) + 1;
+}
 function reportInAmount(cat, year, month){
   const [py, pm] = month===1 ? [year-1, 12] : [year, month-1];
   const key = monthKey(py, pm);
@@ -810,8 +861,11 @@ function renderAccountMonthlyCard(year, month){
       <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;">${chips}</div>
       ${chart}
       ${deltaList ? `<div style="margin-top:14px;">${deltaList}</div>` : ''}
+      <details style="margin-top:10px;">
+        <summary style="cursor:pointer;font-size:11.5px;color:var(--ink-faint);">ℹ️ Comment lire ce graphique ?</summary>
+        <div class="helper-note" style="margin-top:6px;">« À prévoir » = ce qu'il reste à dépenser ce mois sur les catégories liées à ce compte, plus ce qui devrait déjà être mis de côté pour les échéances liées. Cliquez sur un compte pour l'afficher ou le masquer.</div>
+      </details>
     </div>
-    <div class="helper-note">« À prévoir » = ce qu'il reste à dépenser ce mois sur les catégories liées à ce compte, plus ce qui devrait déjà être mis de côté pour les échéances liées. Cliquez sur un compte pour l'afficher ou le masquer — utile si vous en avez beaucoup.</div>
   `;
 }
 function wireAccountMonthlyCardEvents(){
@@ -853,8 +907,8 @@ function renderShell(){
     <div class="screen" id="screen-accounts"></div>
     <nav class="tabbar">
       <button data-tab="dashboard" class="active">${iconFor('dashboard')}Accueil</button>
-      <button data-tab="tx">${iconFor('tx')}Mouvements</button>
       <button data-tab="recap">${iconFor('recap')}Récap</button>
+      <button data-tab="tx">${iconFor('tx')}Mouvements</button>
       <button data-tab="budget">${iconFor('budget')}Budgets</button>
       <button data-tab="accounts">${iconFor('accounts')}Comptes</button>
     </nav>
@@ -1057,16 +1111,22 @@ function renderDashboard(){
       ${renderAccountMonthlyCard(year, month)}
 
       <div class="card">
-        <div class="card-title">Bilan du mois — ${MONTHS[month-1]} · prévu vs réel</div>
-        ${bilanHTML}
-      </div>
-      <div class="helper-note">C'est ici que tu répartis un excédent (économies ou report sur le mois suivant), et que tu ajustes un revenu variable comme un salaire.</div>
-
-      <div class="card">
         <div class="card-title">Suivi par catégorie — cumulé au ${new Date().toLocaleDateString('fr-FR')}</div>
         ${gaugesHTML}
+        <details style="margin-top:10px;">
+          <summary style="cursor:pointer;font-size:11.5px;color:var(--ink-faint);">ℹ️ Comment lire ces jauges ?</summary>
+          <div class="helper-note" style="margin-top:6px;">Le trait vertical indique ce que vous devriez avoir dépensé (ou mis de côté) à ce jour. La barre pleine, c'est le réel.</div>
+        </details>
       </div>
-      <div class="helper-note">Le trait vertical sur chaque jauge indique ce que vous devriez avoir dépensé (ou mis de côté) à ce jour. La barre pleine, c'est le réel.</div>
+
+      <div class="card">
+        <div class="card-title">Bilan du mois — ${MONTHS[month-1]} · prévu vs réel</div>
+        ${bilanHTML}
+        <details style="margin-top:10px;">
+          <summary style="cursor:pointer;font-size:11.5px;color:var(--ink-faint);">ℹ️ À quoi ça sert ?</summary>
+          <div class="helper-note" style="margin-top:6px;">C'est ici que vous répartissez un excédent (économies ou report sur le mois suivant), et que vous ajustez un revenu variable comme un salaire.</div>
+        </details>
+      </div>
     </main>
   `;
 
@@ -1084,7 +1144,7 @@ function groupAndRenderGauges(depCats, year, focusDate, todayISOv){
   depCats.forEach(c=>{ (groups[c.group] = groups[c.group]||[]).push(c); });
   let html = '';
   Object.keys(groups).forEach(g=>{
-    html += `<div style="margin-top:14px;font-size:12px;font-weight:700;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.05em;">${g}</div>`;
+    html += `<div class="group-header" style="margin-top:14px;">${g}</div><div class="gauges-grid">`;
     groups[g].forEach(c=>{
       const annual = effectiveAnnual(c, year);
       const cible = cibleCumulee(c, focusDate);
@@ -1094,7 +1154,7 @@ function groupAndRenderGauges(depCats, year, focusDate, todayISOv){
       const delta = cible - depense; // positif = on track / en avance, négatif = dépassement
       const barClass = depense <= cible*1.03 ? '' : (depense <= cible*1.2 ? 'warn' : 'bad');
       html += `
-        <div class="gauge-item">
+        <div class="gauge-item gauge-card">
           <div class="gauge-top">
             <div class="gauge-name">${iconChip(c)}${c.name} <span class="gauge-tag ${c.mode}">${c.mode==='mensuel'?'mensuel':'échéance '+MONTHS[c.dueMonth-1].slice(0,3)}</span></div>
             <div class="gauge-figures">${fmt(depense)} / ${fmt(annual)}</div>
@@ -1106,6 +1166,7 @@ function groupAndRenderGauges(depCats, year, focusDate, todayISOv){
           <div class="gauge-delta ${delta>=0?'good':'bad'}">${delta>=0 ? 'En avance de '+fmt(delta) : 'Dépassement de '+fmt(-delta)} vs. cible à ce jour</div>
         </div>`;
     });
+    html += `</div>`;
   });
   return html || '<div class="empty-state"><div class="em-icon">🗂️</div><p>Ajoutez des catégories dans l’onglet Budgets.</p></div>';
 }
@@ -1117,16 +1178,28 @@ function renderMonthlyBilanRows(year, month){
   const depCats = cats.filter(c=>c.type==='depense');
   const revGroups = {moi:[], amelia:[], commun:[]};
   revCats.forEach(c=> (revGroups[ownerOf(c)] = revGroups[ownerOf(c)]||[]).push(c));
-  const revGroupLabel = {moi:'Revenus Scott', amelia:'Revenus d’Amélia', commun:'Revenus communs'};
+  const revGroupLabel = {moi:'Scott', amelia:'Amélia', commun:'Communs'};
 
-  let html = '';
   const revHTML = ['moi','amelia','commun'].filter(o=>revGroups[o].length).map(o=>
-    `<div style="font-size:11px;font-weight:700;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.05em;margin:${html?'14px':'0'} 0 4px;">${revGroupLabel[o]}</div>`
+    `<div class="mini-group-label">${revGroupLabel[o]}</div>`
     + revGroups[o].map(c=>bilanRevenuRow(c,year,month)).join('')
-  ).join('');
-  if(revHTML) html += `<div class="group-header" style="margin-top:0;">Revenus</div>` + revHTML;
-  if(depCats.length) html += `<div class="group-header">Dépenses</div>` + depCats.map(c=>bilanDepenseRow(c,year,month)).join('');
-  return html;
+  ).join('') || `<div class="empty-state" style="padding:14px 4px;"><p>Aucun revenu mensuel.</p></div>`;
+  const depHTML = depCats.length
+    ? depCats.map(c=>bilanDepenseRow(c,year,month)).join('')
+    : `<div class="empty-state" style="padding:14px 4px;"><p>Aucune dépense mensuelle.</p></div>`;
+
+  return `
+    <div class="bilan-grid">
+      <div class="bilan-col">
+        <div class="bilan-col-title good">💰 Revenus</div>
+        ${revHTML}
+      </div>
+      <div class="bilan-col">
+        <div class="bilan-col-title bad">💸 Dépenses</div>
+        ${depHTML}
+      </div>
+    </div>
+  `;
 }
 function bilanRevenuRow(c, year, month){
   const key = monthKey(year, month);
@@ -2037,26 +2110,30 @@ function openCategoryModal(c=null){
     </div>
     <div class="helper-note" id="modeHelp"></div>
     <div id="scheduledWrap" style="${c&&c.mode==='echeance'?'display:none;':''}border-top:1px solid var(--line);margin-top:14px;padding-top:12px;">
-      <label style="margin-top:0;">Changement de montant programmé (optionnel)</label>
-      <div class="helper-note" style="margin-top:0;">Ex : un crédit à 300€/mois qui passera à 450€/mois à partir d'une date donnée. Ajoutez une date de fin pour un changement temporaire (ex : assurance majorée pendant quelques mois puis retour au tarif normal).</div>
+      <label style="margin-top:0;">Dépense temporaire ou changement de montant (optionnel)</label>
+      <div class="helper-note" style="margin-top:0;">Pour une dépense qui ne dure qu'un temps (ex : impôts imprévus pendant 3 mois, ou 400€ à provisionner d'ici 4 mois) ou un changement définitif (ex : crédit qui augmente). Laissez "Jusqu'à" vide pour "pour toujours" (ex : crédit immobilier).</div>
       <div class="field-row" style="margin-top:8px;">
         <div>
           <label>À partir de</label>
           <input type="month" id="catSchedFrom" value="${c&&c.scheduledChange?c.scheduledChange.fromKey:''}">
         </div>
         <div>
-          <label>Jusqu'à (optionnel)</label>
+          <label>Jusqu'à (vide = pour toujours)</label>
           <input type="month" id="catSchedTo" value="${c&&c.scheduledChange?(c.scheduledChange.toKey||''):''}">
         </div>
       </div>
+      <div class="seg" id="schedAmountModeSeg" style="margin-top:10px;">
+        <button type="button" data-mode="monthly" class="active">Par mois</button>
+        <button type="button" data-mode="total">Total sur la période</button>
+      </div>
       <div class="field-row" style="margin-top:8px;">
         <div>
-          <label>Nouveau montant/mois (€)</label>
+          <label id="schedAmountLabel">Montant par mois (€)</label>
           <input type="number" step="0.01" id="catSchedAmount" value="${c&&c.scheduledChange?c.scheduledChange.amount:''}">
         </div>
       </div>
-      <div class="helper-note" style="margin-top:6px;">Laissez "Jusqu'à" vide si le nouveau montant doit rester définitif.</div>
-      <span class="link" id="catSchedClear" style="font-size:12px;">Effacer le changement programmé</span>
+      <div class="helper-note" id="schedAmountHelp" style="margin-top:0;"></div>
+      <span class="link" id="catSchedClear" style="font-size:12px;">Effacer</span>
     </div>
   `, `
     ${isEdit?'<button class="btn btn-danger" id="catDeleteBtn">Supprimer</button>':''}
@@ -2098,11 +2175,58 @@ function openCategoryModal(c=null){
     syncingAmounts = false;
     updateHelp();
   });
-  document.getElementById('catSchedClear').onclick = ()=>{
-    document.getElementById('catSchedFrom').value = '';
-    document.getElementById('catSchedTo').value = '';
-    document.getElementById('catSchedAmount').value = '';
+  let schedAmountMode = 'monthly';
+  const schedFromEl = document.getElementById('catSchedFrom');
+  const schedToEl = document.getElementById('catSchedTo');
+  const schedAmountEl = document.getElementById('catSchedAmount');
+  const schedTotalBtn = document.querySelector('#schedAmountModeSeg button[data-mode="total"]');
+  const updateSchedHelp = ()=>{
+    const from = schedFromEl.value, to = schedToEl.value;
+    const val = parseFloat(schedAmountEl.value)||0;
+    const canUseTotal = !!(from && to);
+    schedTotalBtn.disabled = !canUseTotal;
+    schedTotalBtn.style.opacity = canUseTotal ? 1 : .4;
+    schedTotalBtn.style.cursor = canUseTotal ? 'pointer' : 'not-allowed';
+    if(schedAmountMode==='total' && !canUseTotal){
+      schedAmountMode = 'monthly';
+      document.querySelectorAll('#schedAmountModeSeg button').forEach(x=>x.classList.toggle('active', x.dataset.mode==='monthly'));
+    }
+    if(schedAmountMode==='total'){
+      document.getElementById('schedAmountLabel').textContent = 'Total sur la période (€)';
+      const n = monthsBetweenInclusive(from, to);
+      document.getElementById('schedAmountHelp').textContent = n>0 ? `Soit environ ${fmt(val/n)} par mois pendant ${n} mois.` : '';
+    } else {
+      document.getElementById('schedAmountLabel').textContent = 'Montant par mois (€)';
+      if(from && to){
+        const n = monthsBetweenInclusive(from, to);
+        document.getElementById('schedAmountHelp').textContent = n>0 ? `Soit un total d'environ ${fmt(val*n)} sur ${n} mois.` : '';
+      } else if(from && !to){
+        document.getElementById('schedAmountHelp').textContent = `Ce montant s'appliquera pour toujours à partir de cette date.`;
+      } else {
+        document.getElementById('schedAmountHelp').textContent = '';
+      }
+    }
   };
+  document.querySelectorAll('#schedAmountModeSeg button').forEach(b=>{
+    b.onclick = ()=>{
+      if(b.disabled) return;
+      schedAmountMode = b.dataset.mode;
+      document.querySelectorAll('#schedAmountModeSeg button').forEach(x=>x.classList.toggle('active', x===b));
+      updateSchedHelp();
+    };
+  });
+  schedFromEl.addEventListener('input', updateSchedHelp);
+  schedToEl.addEventListener('input', updateSchedHelp);
+  schedAmountEl.addEventListener('input', updateSchedHelp);
+  document.getElementById('catSchedClear').onclick = ()=>{
+    schedFromEl.value = '';
+    schedToEl.value = '';
+    schedAmountEl.value = '';
+    schedAmountMode = 'monthly';
+    document.querySelectorAll('#schedAmountModeSeg button').forEach(x=>x.classList.toggle('active', x.dataset.mode==='monthly'));
+    updateSchedHelp();
+  };
+  updateSchedHelp();
   updateHelp();
 
   document.getElementById('catSaveBtn').onclick = async ()=>{
@@ -2116,10 +2240,17 @@ function openCategoryModal(c=null){
     const icon = document.getElementById('catIcon').value.trim() || null;
     const schedFrom = document.getElementById('catSchedFrom').value;
     const schedTo = document.getElementById('catSchedTo').value;
-    const schedAmount = document.getElementById('catSchedAmount').value;
+    const schedAmountRaw = document.getElementById('catSchedAmount').value;
     if(schedFrom && schedTo && schedTo < schedFrom){ toast('La date de fin doit être après la date de début'); return; }
-    const scheduledChange = (mode==='mensuel' && schedFrom && schedAmount!=='')
-      ? {fromKey: schedFrom, toKey: schedTo || null, amount: Number(schedAmount)} : null;
+    let scheduledChange = null;
+    if(mode==='mensuel' && schedFrom && schedAmountRaw!==''){
+      let monthlyAmt = Number(schedAmountRaw);
+      if(schedAmountMode==='total' && schedTo){
+        const n = monthsBetweenInclusive(schedFrom, schedTo);
+        if(n>0) monthlyAmt = Number(schedAmountRaw) / n;
+      }
+      scheduledChange = {fromKey: schedFrom, toKey: schedTo || null, amount: monthlyAmt};
+    }
     if(!name){ toast('Le nom est requis'); return; }
     if(isEdit){
       Object.assign(c, {name, group, annual, mode, dueMonth, type, owner, accountId, icon, scheduledChange});
