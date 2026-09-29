@@ -577,10 +577,18 @@ function effectiveAnnual(cat, year){
 function baseMonthlyAmount(cat, year, month){
   const key = monthKey(year, month);
   if(cat.overrides && cat.overrides[key]!=null && cat.overrides[key]!=='') return Number(cat.overrides[key]);
-  if(cat.scheduledChange && cat.scheduledChange.fromKey && key >= cat.scheduledChange.fromKey){
+  if(isScheduledChangeActive(cat, key)){
     return Number(cat.scheduledChange.amount);
   }
   return effectiveAnnual(cat, year)/12;
+}
+// Un changement programmé est actif entre fromKey et toKey (inclus). Sans toKey, il reste actif indéfiniment.
+function isScheduledChangeActive(cat, key){
+  const sc = cat.scheduledChange;
+  if(!sc || !sc.fromKey) return false;
+  if(key < sc.fromKey) return false;
+  if(sc.toKey && key > sc.toKey) return false;
+  return true;
 }
 
 // Cible cumulée théorique à une date donnée, pour une catégorie
@@ -671,6 +679,88 @@ function accountMonthlyBudget(acc){
   const now = new Date();
   return STATE.config.categories.filter(c=>c.type==='depense' && c.mode==='mensuel' && c.accountId===acc.id)
     .reduce((s,c)=> s + monthlyPrevu(c, now.getFullYear(), now.getMonth()+1), 0);
+}
+// Ce qu'il reste encore à dépenser ce mois-ci (catégories mensuelles liées) + ce qui devrait déjà
+// être provisionné pour les échéances liées à ce compte : le montant que le compte "devrait" contenir.
+function accountRemainingThisMonth(acc, year, month){
+  const mensuel = STATE.config.categories.filter(c=>c.type==='depense' && c.mode==='mensuel' && c.accountId===acc.id)
+    .reduce((s,c)=> s + Math.max(0, monthlyPrevu(c, year, month) - monthlyReel(c, year, month)), 0);
+  const echeance = accountEcheanceReserve(acc);
+  return mensuel + echeance;
+}
+// Préférence d'affichage (par navigateur) : quels comptes montrer dans le tableau de bord.
+function getDashboardAccountFilter(){
+  try {
+    const raw = localStorage.getItem('dashboardAccounts');
+    if(!raw) return null; // null = tous les comptes
+    const ids = JSON.parse(raw);
+    return Array.isArray(ids) ? ids : null;
+  } catch(e){ return null; }
+}
+function setDashboardAccountFilter(ids){
+  try { localStorage.setItem('dashboardAccounts', JSON.stringify(ids)); } catch(e){}
+}
+function renderAccountMonthlyCard(year, month){
+  const all = STATE.config.accounts;
+  if(!all.length){
+    return `<div class="card"><div class="card-title">Comptes — ${MONTHS[month-1]}</div><div class="empty-state" style="padding:16px;"><p>Aucun compte pour l'instant.</p></div></div>`;
+  }
+  const filter = getDashboardAccountFilter();
+  const selectedIds = (filter && filter.length) ? filter : all.map(a=>a.id);
+  const chips = all.map(a=>{
+    const active = selectedIds.includes(a.id);
+    return `<button type="button" class="btn btn-sm acct-chip" data-id="${a.id}"
+      style="border-radius:999px;padding:6px 12px;font-size:12.5px;border:1px solid var(--line);
+      background:${active?'var(--accent)':'var(--surface)'};color:${active?'#fff':'var(--ink)'};">${a.name}</button>`;
+  }).join('');
+  const shown = all.filter(a=>selectedIds.includes(a.id));
+  const rows = shown.length ? shown.map(a=>{
+    const reel = soldeTheorique(a);
+    const necessaire = accountRemainingThisMonth(a, year, month);
+    const delta = reel - necessaire;
+    const scaleMax = Math.max(reel, necessaire, 1);
+    const pct = clamp(reel/scaleMax*100, 0, 100);
+    const targetPct = clamp(necessaire/scaleMax*100, 0, 100);
+    const barClass = delta>=0 ? '' : (reel >= necessaire*0.7 ? 'warn' : 'bad');
+    const owner = ownerOf(a);
+    const ownerTag = owner!=='commun' ? `<span class="owner-tag ${owner}">${OWNER_LABEL[owner]}</span>` : '';
+    return `<div class="gauge-item">
+      <div class="gauge-top">
+        <div class="gauge-name">${a.name} ${ownerTag}</div>
+        <div class="gauge-figures">${fmt(reel)} réel / ${fmt(necessaire)} à prévoir</div>
+      </div>
+      <div class="gauge-track">
+        <div class="gauge-fill ${barClass}" style="width:${pct}%"></div>
+        <div class="gauge-target" style="left:${targetPct}%"></div>
+      </div>
+      <div class="gauge-delta ${delta>=0?'good':'bad'}">${delta>=0?'Marge de '+fmt(delta):'Il manque '+fmt(-delta)} pour couvrir ce qu'il reste à dépenser ce mois et les échéances à provisionner</div>
+    </div>`;
+  }).join('') : `<div class="empty-state" style="padding:16px;"><p>Sélectionnez au moins un compte ci-dessus.</p></div>`;
+  return `
+    <div class="card">
+      <div class="card-title">Comptes — ${MONTHS[month-1]} : réel vs à prévoir</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px;">${chips}</div>
+      ${rows}
+    </div>
+    <div class="helper-note">« À prévoir » = ce qu'il reste à dépenser ce mois sur les catégories liées à ce compte, plus ce qui devrait déjà être mis de côté pour les échéances liées. Cliquez sur un compte pour l'afficher ou le masquer — utile si vous en avez beaucoup.</div>
+  `;
+}
+function wireAccountMonthlyCardEvents(){
+  document.querySelectorAll('.acct-chip').forEach(b=>{
+    b.onclick = ()=>{
+      const all = STATE.config.accounts.map(a=>a.id);
+      const current = getDashboardAccountFilter() || all;
+      let next;
+      if(current.includes(b.dataset.id)){
+        next = current.filter(id=>id!==b.dataset.id);
+      } else {
+        next = current.concat([b.dataset.id]);
+      }
+      // si tout est sélectionné, on retombe sur "null" (tous) pour rester simple
+      setDashboardAccountFilter(next.length===all.length ? null : next);
+      renderDashboard();
+    };
+  });
 }
 
 /* ============================= RENDU : SHELL ============================= */
@@ -895,11 +985,7 @@ function renderDashboard(){
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-title">Vue par compte — as-tu ce qu'il faut ?</div>
-        ${renderAccountOverviewRows()}
-      </div>
-      <div class="helper-note">Le trait sur la jauge indique ce qu'un compte devrait contenir (échéances qui lui sont liées dans Budgets). Assigne un compte à une catégorie pour le faire apparaître ici.</div>
+      ${renderAccountMonthlyCard(year, month)}
 
       <div class="card">
         <div class="card-title">Bilan du mois — ${MONTHS[month-1]} · prévu vs réel</div>
@@ -921,6 +1007,7 @@ function renderDashboard(){
   document.getElementById('monthNext').onclick = ()=>{ STATE.currentMonth = STATE.currentMonth>=12?1:STATE.currentMonth+1; renderDashboard(); };
   wireMonthlyBilanEvents(year, month);
   wirePendingTransferEvents();
+  wireAccountMonthlyCardEvents();
 }
 
 function groupAndRenderGauges(depCats, year, focusDate, todayISOv){
@@ -996,7 +1083,7 @@ function bilanDepenseRow(c, year, month){
   const barClass = reel<=prevu ? '' : (reel<=prevu*1.2?'warn':'bad');
   const existing = c.rollover && c.rollover[key];
   const hasOverride = c.overrides && c.overrides[key]!=null && c.overrides[key]!=='';
-  const hasScheduled = c.scheduledChange && c.scheduledChange.fromKey && key >= c.scheduledChange.fromKey;
+  const hasScheduled = isScheduledChangeActive(c, key);
   let actionHTML = '';
   if(existing){
     actionHTML = `<div class="gauge-delta good">✓ ${existing.choice==='epargne'?'Mis en épargne':(existing.amount>=0?'Ajouté au budget du mois prochain':'Déduit du budget du mois prochain')} (${fmtSigned(existing.amount)}) · <span class="link undo-rollover" data-cat="${c.id}" data-key="${key}">annuler</span></div>`;
@@ -1217,7 +1304,7 @@ function wireMonthlyBilanEvents(year, month){
 function openOverrideModal(cat, year, month){
   const key = monthKey(year, month);
   const current = (cat.overrides && cat.overrides[key]!=null) ? cat.overrides[key] : '';
-  const defaultBase = cat.scheduledChange && cat.scheduledChange.fromKey && key >= cat.scheduledChange.fromKey
+  const defaultBase = isScheduledChangeActive(cat, key)
     ? Number(cat.scheduledChange.amount) : effectiveAnnual(cat, year)/12;
   openModal(`Prévu de ${MONTHS[month-1]} pour ${cat.name}`, `
     <label>Montant prévu ce mois-ci (€)</label>
@@ -1873,17 +1960,24 @@ function openCategoryModal(c=null){
     <div class="helper-note" id="modeHelp"></div>
     <div id="scheduledWrap" style="${c&&c.mode==='echeance'?'display:none;':''}border-top:1px solid var(--line);margin-top:14px;padding-top:12px;">
       <label style="margin-top:0;">Changement de montant programmé (optionnel)</label>
-      <div class="helper-note" style="margin-top:0;">Ex : un crédit à 300€/mois qui passera à 450€/mois à partir d'une date donnée.</div>
+      <div class="helper-note" style="margin-top:0;">Ex : un crédit à 300€/mois qui passera à 450€/mois à partir d'une date donnée. Ajoutez une date de fin pour un changement temporaire (ex : assurance majorée pendant quelques mois puis retour au tarif normal).</div>
       <div class="field-row" style="margin-top:8px;">
         <div>
           <label>À partir de</label>
           <input type="month" id="catSchedFrom" value="${c&&c.scheduledChange?c.scheduledChange.fromKey:''}">
         </div>
         <div>
+          <label>Jusqu'à (optionnel)</label>
+          <input type="month" id="catSchedTo" value="${c&&c.scheduledChange?(c.scheduledChange.toKey||''):''}">
+        </div>
+      </div>
+      <div class="field-row" style="margin-top:8px;">
+        <div>
           <label>Nouveau montant/mois (€)</label>
           <input type="number" step="0.01" id="catSchedAmount" value="${c&&c.scheduledChange?c.scheduledChange.amount:''}">
         </div>
       </div>
+      <div class="helper-note" style="margin-top:6px;">Laissez "Jusqu'à" vide si le nouveau montant doit rester définitif.</div>
       <span class="link" id="catSchedClear" style="font-size:12px;">Effacer le changement programmé</span>
     </div>
   `, `
@@ -1915,6 +2009,7 @@ function openCategoryModal(c=null){
   document.getElementById('catAnnual').addEventListener('input', updateHelp);
   document.getElementById('catSchedClear').onclick = ()=>{
     document.getElementById('catSchedFrom').value = '';
+    document.getElementById('catSchedTo').value = '';
     document.getElementById('catSchedAmount').value = '';
   };
   updateHelp();
@@ -1929,9 +2024,11 @@ function openCategoryModal(c=null){
     const accountId = document.getElementById('catAccount').value || null;
     const icon = document.getElementById('catIcon').value.trim() || null;
     const schedFrom = document.getElementById('catSchedFrom').value;
+    const schedTo = document.getElementById('catSchedTo').value;
     const schedAmount = document.getElementById('catSchedAmount').value;
+    if(schedFrom && schedTo && schedTo < schedFrom){ toast('La date de fin doit être après la date de début'); return; }
     const scheduledChange = (mode==='mensuel' && schedFrom && schedAmount!=='')
-      ? {fromKey: schedFrom, amount: Number(schedAmount)} : null;
+      ? {fromKey: schedFrom, toKey: schedTo || null, amount: Number(schedAmount)} : null;
     if(!name){ toast('Le nom est requis'); return; }
     if(isEdit){
       Object.assign(c, {name, group, annual, mode, dueMonth, type, owner, accountId, icon, scheduledChange});
