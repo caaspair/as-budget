@@ -2071,7 +2071,11 @@ function openCategoryModal(c=null){
       ${['🏠','🚗','🛒','🐾','🏦','📋','🎁','⚕️','🍽️','✈️','💇','📺','💼','⚽','🔧','🛡️'].map(e=>`<button type="button" class="btn btn-ghost btn-sm icon-pick" data-icon="${e}" style="padding:6px 9px;">${e}</button>`).join('')}
     </div>
     <label>Groupe</label>
-    <input type="text" id="catGroup" value="${c?c.group:''}" placeholder="ex : Impôts">
+    <select id="catGroupSelect">
+      ${Array.from(new Set(STATE.config.categories.map(x=>x.group).filter(Boolean))).sort((a,b)=>a.localeCompare(b,'fr')).map(g=>`<option value="${g}" ${c&&c.group===g?'selected':''}>${g}</option>`).join('')}
+      <option value="__new__">+ Nouveau groupe…</option>
+    </select>
+    <input type="text" id="catGroupNew" placeholder="Nom du nouveau groupe" style="margin-top:8px;display:none;">
     <label>Propriétaire</label>
     <select id="catOwner">
       <option value="commun" ${(!c||ownerOf(c)==='commun')?'selected':''}>Commun</option>
@@ -2147,6 +2151,15 @@ function openCategoryModal(c=null){
   document.querySelectorAll('.icon-pick').forEach(b=>{
     b.onclick = ()=>{ document.getElementById('catIcon').value = b.dataset.icon; };
   });
+  const catGroupSelect = document.getElementById('catGroupSelect');
+  const catGroupNew = document.getElementById('catGroupNew');
+  const updateGroupField = ()=>{
+    const isNew = catGroupSelect.value==='__new__';
+    catGroupNew.style.display = isNew ? '' : 'none';
+    if(isNew) catGroupNew.focus();
+  };
+  catGroupSelect.onchange = updateGroupField;
+  updateGroupField();
   const modeSel = document.getElementById('catMode');
   const catAnnualEl = document.getElementById('catAnnual');
   const catMonthlyEl = document.getElementById('catMonthly');
@@ -2231,7 +2244,8 @@ function openCategoryModal(c=null){
 
   document.getElementById('catSaveBtn').onclick = async ()=>{
     const name = document.getElementById('catName').value.trim();
-    const group = document.getElementById('catGroup').value.trim() || 'Autres';
+    const groupSelVal = document.getElementById('catGroupSelect').value;
+    const group = (groupSelVal==='__new__' ? document.getElementById('catGroupNew').value.trim() : groupSelVal) || 'Autres';
     const annual = parseFloat(document.getElementById('catAnnual').value)||0;
     const mode = document.getElementById('catMode').value;
     const dueMonth = mode==='echeance' ? Number(document.getElementById('catDueMonth').value) : null;
