@@ -528,22 +528,69 @@ function catById(id){ return allCategories().find(c=>c.id===id); }
 function accById(id){ return STATE.config.accounts.find(a=>a.id===id); }
 
 /* ============================= CALCULS BUDGET ============================= */
+// Icônes & couleurs (aspect visuel)
+const GROUP_COLOR_MAP = {
+  'Logement':'#2F6F5E','Transport':'#3E5C76','Alimentation':'#B8843A','Animaux':'#8E5572',
+  'Banque':'#5B7A8C','Impôts':'#B4483C','Autres':'#6B8F71','Loisirs':'#C9A227','Revenus':'#2F6F5E'
+};
+function groupColor(group){
+  if(GROUP_COLOR_MAP[group]) return GROUP_COLOR_MAP[group];
+  let h = 0; for(let i=0;i<group.length;i++) h = group.charCodeAt(i) + ((h<<5)-h);
+  return CHART_COLORS[Math.abs(h) % CHART_COLORS.length];
+}
+const ICON_KEYWORDS = [
+  [/loyer|emprunt|logement/i,'🏠'], [/électri|eau|internet|entretien|ménage|travaux|rénov/i,'🔧'],
+  [/assurance/i,'🛡️'], [/carburant|essence|voiture|véhicule/i,'🚗'], [/courses|alimentation/i,'🛒'],
+  [/animau|médical/i,'🐾'], [/banque|frais/i,'🏦'], [/impôt|taxe/i,'📋'], [/cadeau/i,'🎁'],
+  [/médecin|santé/i,'⚕️'], [/sorti|restaurant/i,'🍽️'], [/habillement/i,'👕'], [/football|piscine|sport/i,'⚽'],
+  [/voyage/i,'✈️'], [/coiffeur/i,'💇'], [/netflix|spotify|prime|iptv|abonnement/i,'📺'],
+  [/salaire/i,'💼'], [/prime/i,'🎯']
+];
+function categoryIcon(cat){
+  if(cat.icon) return cat.icon;
+  const found = ICON_KEYWORDS.find(([re])=>re.test(cat.name));
+  return found ? found[1] : (cat.type==='revenu' ? '💰' : '📁');
+}
+function iconChip(cat){
+  return `<span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:7px;background:${groupColor(cat.group||'Autres')}22;font-size:13px;margin-right:2px;">${categoryIcon(cat)}</span>`;
+}
+
+// Report d'une échéance d'une année sur l'autre (garder en épargne / reporter)
+function effectiveAnnual(cat, year){
+  const prev = cat.yearlyRollover && cat.yearlyRollover[year-1];
+  const bump = (prev && prev.choice==='report') ? Number(prev.amount) : 0;
+  return Number(cat.annual||0) + bump;
+}
+
+// Montant mensuel de base pour une catégorie mensuelle, en tenant compte d'un changement programmé
+function baseMonthlyAmount(cat, year, month){
+  const key = monthKey(year, month);
+  if(cat.overrides && cat.overrides[key]!=null && cat.overrides[key]!=='') return Number(cat.overrides[key]);
+  if(cat.scheduledChange && cat.scheduledChange.fromKey && key >= cat.scheduledChange.fromKey){
+    return Number(cat.scheduledChange.amount);
+  }
+  return effectiveAnnual(cat, year)/12;
+}
+
 // Cible cumulée théorique à une date donnée, pour une catégorie
 function cibleCumulee(cat, date){
   const y = date.getFullYear();
+  const annual = effectiveAnnual(cat, y);
   const doy = dayOfYear(date);
   const totalDays = daysInYear(y);
   if(cat.mode === 'mensuel'){
-    return cat.annual * (doy/totalDays);
+    return annual * (doy/totalDays);
   } else {
     const dueDay = dayOfYear(new Date(y, cat.dueMonth, 0)); // last day of dueMonth
-    if(doy >= dueDay) return cat.annual;
-    return cat.annual * (doy/dueDay);
+    if(doy >= dueDay) return annual;
+    return annual * (doy/dueDay);
   }
 }
-function mensualiteConseillee(cat){
-  if(cat.mode === 'mensuel') return cat.annual/12;
-  return cat.annual / cat.dueMonth;
+function mensualiteConseillee(cat, year){
+  const y = year || new Date().getFullYear();
+  const annual = effectiveAnnual(cat, y);
+  if(cat.mode === 'mensuel') return annual/12;
+  return annual / cat.dueMonth;
 }
 function monthKey(year, month){ return `${year}-${String(month).padStart(2,'0')}`; }
 function reportInAmount(cat, year, month){
@@ -553,9 +600,7 @@ function reportInAmount(cat, year, month){
   return (entry && entry.choice==='report') ? Number(entry.amount) : 0;
 }
 function monthlyPrevu(cat, year, month){
-  const key = monthKey(year, month);
-  const overrideVal = cat.overrides && cat.overrides[key];
-  const base = (overrideVal!=null && overrideVal!=='') ? Number(overrideVal) : (cat.annual/12);
+  const base = baseMonthlyAmount(cat, year, month);
   return cat.type==='depense' ? base + reportInAmount(cat, year, month) : base;
 }
 function monthlyReel(cat, year, month){
@@ -568,6 +613,7 @@ function totalEpargneViaBudgets(){
   let total = 0;
   STATE.config.categories.filter(c=>c.type==='depense').forEach(c=>{
     Object.values(c.rollover||{}).forEach(entry=>{ if(entry.choice==='epargne') total += Number(entry.amount||0); });
+    Object.values(c.yearlyRollover||{}).forEach(entry=>{ if(entry.choice==='epargne') total += Number(entry.amount||0); });
   });
   return total;
 }
@@ -726,6 +772,42 @@ function renderAccountOverviewRows(){
     </div>`;
   }).join('');
 }
+function coachMessage(revenus, depenses){
+  if(revenus<=0 && depenses<=0) return "👋 Ajoutez vos premiers mouvements pour voir vos stats prendre vie.";
+  const taux = revenus>0 ? (revenus-depenses)/revenus : 0;
+  if(taux >= 0.2) return `🌟 Superbe ! Vous épargnez ${Math.round(taux*100)}% de vos revenus cette année.`;
+  if(taux >= 0.05) return `👍 Vous êtes dans le vert, taux d'épargne de ${Math.round(taux*100)}%.`;
+  if(taux >= 0) return "🙂 Ça s'équilibre — de quoi surveiller les prochains mois.";
+  return "⚠️ Les dépenses dépassent les revenus cette année — un point d'attention.";
+}
+function renderTrendChart(){
+  const now = new Date();
+  const months = [];
+  for(let i=5;i>=0;i--){
+    const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
+    months.push({y:d.getFullYear(), m:d.getMonth()+1, label:MONTHS[d.getMonth()].slice(0,3)});
+  }
+  months.forEach(({y})=>{ if(!STATE.txByYear[y]) ensureYearLoaded(y); });
+  const totals = months.map(({y,m})=>{
+    const list = STATE.txByYear[y] || [];
+    const ms = String(m).padStart(2,'0');
+    return list.filter(t=>t.type==='depense' && t.date.slice(5,7)===ms && t.date.slice(0,4)===String(y))
+                .reduce((s,t)=>s+Number(t.amount||0), 0);
+  });
+  const max = Math.max(...totals, 1);
+  const bars = months.map((mo,i)=>{
+    const h = clamp((totals[i]/max)*100, totals[i]>0?4:0, 100);
+    const isCurrent = i===months.length-1;
+    return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;">
+      <div class="num" style="font-size:9.5px;color:var(--ink-faint);">${Math.round(totals[i])}€</div>
+      <div style="width:100%;max-width:30px;height:64px;background:#EDEAE0;border-radius:6px;display:flex;align-items:flex-end;overflow:hidden;">
+        <div style="width:100%;height:${h}%;background:${isCurrent?'var(--accent)':'#C9B98A'};border-radius:6px 6px 0 0;transition:height .5s ease;"></div>
+      </div>
+      <div style="font-size:10.5px;font-weight:600;color:var(--ink-soft);text-transform:capitalize;">${mo.label}</div>
+    </div>`;
+  }).join('');
+  return `<div style="display:flex;gap:6px;align-items:flex-end;">${bars}</div>`;
+}
 function renderDashboard(){
   const el = document.getElementById('screen-dashboard');
   const year = STATE.currentYear;
@@ -754,6 +836,7 @@ function renderDashboard(){
 
   const gaugesHTML = groupAndRenderGauges(depCats, year, focusDate, todayISOv);
   const bilanHTML = renderMonthlyBilanRows(year, month);
+  const echeanceReconcileHTML = renderEcheanceReconciliationCard(year);
 
   el.innerHTML = `
     <div class="topbar">
@@ -778,7 +861,15 @@ function renderDashboard(){
           <div><div class="lbl">Revenus reçus (${year})</div><div class="val">${fmt(revenusYTD)}</div></div>
           <div><div class="lbl">Dépensé (${year})</div><div class="val">${fmt(depensesYTD)}</div></div>
         </div>
+        <div style="margin-top:14px;font-size:12.5px;color:#B9D2C7;">${coachMessage(revenusYTD, depensesYTD)}</div>
       </div>
+
+      <div class="card">
+        <div class="card-title">Tendance des dépenses — 6 derniers mois</div>
+        ${renderTrendChart()}
+      </div>
+
+      ${echeanceReconcileHTML}
 
       <div class="stat-row">
         <div class="stat-box">
@@ -825,20 +916,21 @@ function groupAndRenderGauges(depCats, year, focusDate, todayISOv){
   Object.keys(groups).forEach(g=>{
     html += `<div style="margin-top:14px;font-size:12px;font-weight:700;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.05em;">${g}</div>`;
     groups[g].forEach(c=>{
+      const annual = effectiveAnnual(c, year);
       const cible = cibleCumulee(c, focusDate);
       const depense = sommeCategorie(year, c.id, 'depense', todayISOv);
-      const pct = c.annual>0 ? clamp((depense/c.annual)*100,0,100) : (depense>0?100:0);
-      const targetPct = c.annual>0 ? clamp((cible/c.annual)*100,0,100) : 0;
+      const pct = annual>0 ? clamp((depense/annual)*100,0,100) : (depense>0?100:0);
+      const targetPct = annual>0 ? clamp((cible/annual)*100,0,100) : 0;
       const delta = cible - depense; // positif = on track / en avance, négatif = dépassement
       const barClass = depense <= cible*1.03 ? '' : (depense <= cible*1.2 ? 'warn' : 'bad');
       html += `
         <div class="gauge-item">
           <div class="gauge-top">
-            <div class="gauge-name">${c.name} <span class="gauge-tag ${c.mode}">${c.mode==='mensuel'?'mensuel':'échéance '+MONTHS[c.dueMonth-1].slice(0,3)}</span></div>
-            <div class="gauge-figures">${fmt(depense)} / ${fmt(c.annual)}</div>
+            <div class="gauge-name">${iconChip(c)}${c.name} <span class="gauge-tag ${c.mode}">${c.mode==='mensuel'?'mensuel':'échéance '+MONTHS[c.dueMonth-1].slice(0,3)}</span></div>
+            <div class="gauge-figures">${fmt(depense)} / ${fmt(annual)}</div>
           </div>
           <div class="gauge-track">
-            <div class="gauge-fill ${barClass}" style="width:${pct}%"></div>
+            <div class="gauge-fill ${barClass}" style="width:${pct}%; background:${barClass?'':groupColor(g)};"></div>
             <div class="gauge-target" style="left:${targetPct}%"></div>
           </div>
           <div class="gauge-delta ${delta>=0?'good':'bad'}">${delta>=0 ? 'En avance de '+fmt(delta) : 'Dépassement de '+fmt(-delta)} vs. cible à ce jour</div>
@@ -874,7 +966,7 @@ function bilanRevenuRow(c, year, month){
   const hasOverride = c.overrides && c.overrides[key]!=null && c.overrides[key]!=='';
   return `<div class="gauge-item">
     <div class="gauge-top">
-      <div class="gauge-name">${c.name}</div>
+      <div class="gauge-name">${iconChip(c)}${c.name}</div>
       <div class="gauge-figures">${fmt(reel)} reçu / ${fmt(prevu)} prévu${hasOverride?' *':''}</div>
     </div>
     <div class="gauge-delta ${diff>=0?'good':'bad'}">${diff>=0?'Au-dessus du prévu de '+fmt(diff):'En-dessous du prévu de '+fmt(-diff)}</div>
@@ -889,6 +981,8 @@ function bilanDepenseRow(c, year, month){
   const delta = prevu - reel;
   const barClass = reel<=prevu ? '' : (reel<=prevu*1.2?'warn':'bad');
   const existing = c.rollover && c.rollover[key];
+  const hasOverride = c.overrides && c.overrides[key]!=null && c.overrides[key]!=='';
+  const hasScheduled = c.scheduledChange && c.scheduledChange.fromKey && key >= c.scheduledChange.fromKey;
   let actionHTML = '';
   if(existing){
     actionHTML = `<div class="gauge-delta good">✓ ${existing.choice==='epargne'?'Mis en épargne':(existing.amount>=0?'Ajouté au budget du mois prochain':'Déduit du budget du mois prochain')} (${fmtSigned(existing.amount)}) · <span class="link undo-rollover" data-cat="${c.id}" data-key="${key}">annuler</span></div>`;
@@ -904,15 +998,63 @@ function bilanDepenseRow(c, year, month){
   }
   return `<div class="gauge-item">
     <div class="gauge-top">
-      <div class="gauge-name">${c.name}</div>
-      <div class="gauge-figures">${fmt(reel)} / ${fmt(prevu)}</div>
+      <div class="gauge-name">${iconChip(c)}${c.name}${hasScheduled?' <span class="owner-tag commun">changement programmé</span>':''}</div>
+      <div class="gauge-figures">${fmt(reel)} / ${fmt(prevu)}${hasOverride?' *':''}</div>
     </div>
     <div class="gauge-track"><div class="gauge-fill ${barClass}" style="width:${pct}%"></div></div>
     <div class="gauge-delta ${delta>=0?'good':'bad'}">${delta>=0?'Excédent de '+fmt(delta):'Dépassement de '+fmt(-delta)} ce mois-ci</div>
     ${actionHTML}
+    <span class="link override-edit" data-cat="${c.id}" style="font-size:12px;">✎ Ajuster le prévu de ${MONTHS[month-1]}</span>
   </div>`;
 }
 
+function echeancesAReconcilier(year){
+  const today = new Date();
+  if(year !== today.getFullYear()) return [];
+  return STATE.config.categories.filter(c=>{
+    if(c.type!=='depense' || c.mode!=='echeance') return false;
+    const dueEnd = new Date(year, c.dueMonth, 0);
+    if(today <= dueEnd) return false;
+    const decided = c.yearlyRollover && c.yearlyRollover[year];
+    if(decided) return false;
+    const delta = effectiveAnnual(c, year) - sommeCategorie(year, c.id, 'depense', todayISO());
+    return Math.abs(delta) > 0.5;
+  });
+}
+function renderEcheanceReconciliationCard(year){
+  const pending = echeancesAReconcilier(year);
+  if(!pending.length) return '';
+  const rows = pending.map(c=>{
+    const spent = sommeCategorie(year, c.id, 'depense', todayISO());
+    const delta = effectiveAnnual(c, year) - spent;
+    let actionHTML = '';
+    if(delta > 0.5){
+      actionHTML = `<div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;">
+        <button class="btn btn-ghost btn-sm yearly-rollover-btn" data-cat="${c.id}" data-year="${year}" data-choice="epargne" data-amount="${delta.toFixed(2)}">Garder en épargne (+${fmt(delta)})</button>
+        <button class="btn btn-ghost btn-sm yearly-rollover-btn" data-cat="${c.id}" data-year="${year}" data-choice="report" data-amount="${delta.toFixed(2)}">Ajouter au budget de l'an prochain</button>
+      </div>`;
+    } else {
+      actionHTML = `<div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;">
+        <button class="btn btn-ghost btn-sm yearly-rollover-btn" data-cat="${c.id}" data-year="${year}" data-choice="report" data-amount="${delta.toFixed(2)}">Répercuter le dépassement sur l'an prochain (${fmt(delta)})</button>
+      </div>`;
+    }
+    return `<div class="gauge-item">
+      <div class="gauge-top">
+        <div class="gauge-name">${iconChip(c)}${c.name}</div>
+        <div class="gauge-figures">${fmt(spent)} / ${fmt(effectiveAnnual(c,year))} prévu</div>
+      </div>
+      <div class="gauge-delta ${delta>=0?'good':'bad'}">${delta>=0?'Il vous reste '+fmt(delta):'Dépassement de '+fmt(-delta)} sur ce poste cette année — que faire ?</div>
+      ${actionHTML}
+    </div>`;
+  }).join('');
+  return `
+    <div class="card">
+      <div class="card-title">Échéances passées à régler</div>
+      ${rows}
+    </div>
+    <div class="helper-note">Ces échéances sont passées cette année — dis-nous quoi faire de l'écart avant de passer à autre chose.</div>
+  `;
+}
 function wireMonthlyBilanEvents(year, month){
   document.querySelectorAll('.rollover-btn').forEach(b=>{
     b.onclick = async ()=>{
@@ -939,15 +1081,36 @@ function wireMonthlyBilanEvents(year, month){
       openOverrideModal(cat, year, month);
     };
   });
+  document.querySelectorAll('.yearly-rollover-btn').forEach(b=>{
+    b.onclick = async ()=>{
+      const cat = STATE.config.categories.find(c=>c.id===b.dataset.cat);
+      cat.yearlyRollover = cat.yearlyRollover || {};
+      cat.yearlyRollover[b.dataset.year] = {amount: Number(b.dataset.amount), choice: b.dataset.choice};
+      await saveConfig();
+      toast(b.dataset.choice==='epargne' ? 'Mis en épargne' : "Ajouté au budget de l'année prochaine");
+      renderDashboard();
+    };
+  });
+  document.querySelectorAll('.undo-yearly-rollover').forEach(b=>{
+    b.onclick = async ()=>{
+      const cat = STATE.config.categories.find(c=>c.id===b.dataset.cat);
+      if(cat.yearlyRollover) delete cat.yearlyRollover[b.dataset.year];
+      await saveConfig();
+      toast('Décision annulée');
+      renderDashboard();
+    };
+  });
 }
 
 function openOverrideModal(cat, year, month){
   const key = monthKey(year, month);
   const current = (cat.overrides && cat.overrides[key]!=null) ? cat.overrides[key] : '';
+  const defaultBase = cat.scheduledChange && cat.scheduledChange.fromKey && key >= cat.scheduledChange.fromKey
+    ? Number(cat.scheduledChange.amount) : effectiveAnnual(cat, year)/12;
   openModal(`Prévu de ${MONTHS[month-1]} pour ${cat.name}`, `
     <label>Montant prévu ce mois-ci (€)</label>
-    <input type="number" step="0.01" id="overrideVal" value="${current}" placeholder="${(cat.annual/12).toFixed(2)} (par défaut)">
-    <div class="helper-note">Laisse vide pour revenir à la moyenne annuelle (${fmt(cat.annual/12)}/mois).</div>
+    <input type="number" step="0.01" id="overrideVal" value="${current}" placeholder="${defaultBase.toFixed(2)} (par défaut)">
+    <div class="helper-note">Laisse vide pour revenir au montant par défaut (${fmt(defaultBase)}/mois).</div>
   `, `<button class="btn btn-primary" id="overrideSaveBtn">Enregistrer</button>`);
   document.getElementById('overrideSaveBtn').onclick = async ()=>{
     const val = document.getElementById('overrideVal').value;
@@ -1008,11 +1171,11 @@ function renderTx(){
             }
             const cat = catById(t.categoryId) || (t.type==='revenu'?UNCAT_REV:UNCAT_DEP);
             const acc = accById(t.accountId);
-            const color = t.type==='revenu' ? 'var(--good)' : 'var(--gold)';
+            const color = t.type==='revenu' ? 'var(--good)' : groupColor(cat.group||'Autres');
             return `<div class="tx-row" data-id="${t.id}">
               <div class="tx-dot" style="background:${color}"></div>
               <div class="tx-mid">
-                <div class="tx-cat">${cat.name}</div>
+                <div class="tx-cat">${iconChip(cat)}${cat.name}</div>
                 <div class="tx-meta">${new Date(t.date).toLocaleDateString('fr-FR')} · ${acc?acc.name:'—'}${t.note?' · '+t.note:''}</div>
               </div>
               <div class="tx-amt ${t.type==='revenu'?'rev':'dep'}">${t.type==='revenu'?'+':'−'}${fmt(Math.abs(t.amount))}</div>
@@ -1391,8 +1554,8 @@ function renderRecap(){
   const inScopeCat = c => scope==='tous' || categoryScopeOwner(c)===scope;
   const depCatsScope = STATE.config.categories.filter(c=>c.type==='depense' && inScopeCat(c));
   const revCatsScope = STATE.config.categories.filter(c=>c.type==='revenu' && inScopeCat(c));
-  const depPrevuAnnuel = depCatsScope.reduce((s,c)=>s+c.annual,0);
-  const revPrevuAnnuel = revCatsScope.reduce((s,c)=>s+c.annual,0);
+  const depPrevuAnnuel = depCatsScope.reduce((s,c)=>s+effectiveAnnual(c,year),0);
+  const revPrevuAnnuel = revCatsScope.reduce((s,c)=>s+effectiveAnnual(c,year),0);
   const depCibleADate = depCatsScope.reduce((s,c)=>s+cibleCumulee(c,focusDate),0);
   const revCibleADate = revCatsScope.reduce((s,c)=>s+cibleCumulee(c,focusDate),0);
   const depEcart = depCibleADate - totDep;
@@ -1494,8 +1657,8 @@ function renderBudget(){
   const el = document.getElementById('screen-budget');
   const dep = STATE.config.categories.filter(c=>c.type==='depense');
   const rev = STATE.config.categories.filter(c=>c.type==='revenu');
-  const totalDep = dep.reduce((s,c)=>s+c.annual,0);
-  const totalRev = rev.reduce((s,c)=>s+c.annual,0);
+  const totalDep = dep.reduce((s,c)=>s+effectiveAnnual(c,new Date().getFullYear()),0);
+  const totalRev = rev.reduce((s,c)=>s+effectiveAnnual(c,new Date().getFullYear()),0);
 
   const groups = {};
   dep.forEach(c=>(groups[c.group]=groups[c.group]||[]).push(c));
@@ -1541,12 +1704,15 @@ function renderBudget(){
 function emptyRow(){ return `<div class="empty-state" style="padding:20px;"><p>Aucune catégorie.</p></div>`; }
 function budgetRow(c){
   const owner = ownerOf(c);
+  const y = new Date().getFullYear();
+  const eff = effectiveAnnual(c, y);
+  const hasSched = c.scheduledChange && c.scheduledChange.fromKey;
   return `<div class="tx-row cat-row" data-id="${c.id}" style="cursor:pointer;">
     <div class="tx-mid">
-      <div class="tx-cat">${c.name} ${owner!=='commun'?`<span class="owner-tag ${owner}">${OWNER_LABEL[owner]}</span>`:''}</div>
-      <div class="tx-meta">${c.mode==='mensuel' ? 'Lissé sur l’année · '+fmt(c.annual/12)+'/mois' : 'Échéance en '+MONTHS[c.dueMonth-1]+' · à provisionner '+fmt(mensualiteConseillee(c))+'/mois'}</div>
+      <div class="tx-cat">${iconChip(c)}${c.name} ${owner!=='commun'?`<span class="owner-tag ${owner}">${OWNER_LABEL[owner]}</span>`:''}${hasSched?' <span class="owner-tag amelia">changement programmé</span>':''}</div>
+      <div class="tx-meta">${c.mode==='mensuel' ? 'Lissé sur l’année · '+fmt(eff/12)+'/mois' : 'Échéance en '+MONTHS[c.dueMonth-1]+' · à provisionner '+fmt(mensualiteConseillee(c,y))+'/mois'}</div>
     </div>
-    <div class="tx-amt">${fmt(c.annual)}</div>
+    <div class="tx-amt">${fmt(eff)}</div>
   </div>`;
 }
 function openCategoryModal(c=null){
@@ -1558,6 +1724,11 @@ function openCategoryModal(c=null){
     </div>
     <label>Nom</label>
     <input type="text" id="catName" value="${c?c.name:''}" placeholder="ex : Taxe foncière">
+    <label>Icône (optionnel)</label>
+    <input type="text" id="catIcon" value="${c&&c.icon?c.icon:''}" placeholder="ex : 🏠 — laisse vide pour une icône automatique" maxlength="4">
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px;">
+      ${['🏠','🚗','🛒','🐾','🏦','📋','🎁','⚕️','🍽️','✈️','💇','📺','💼','⚽','🔧','🛡️'].map(e=>`<button type="button" class="btn btn-ghost btn-sm icon-pick" data-icon="${e}" style="padding:6px 9px;">${e}</button>`).join('')}
+    </div>
     <label>Groupe</label>
     <input type="text" id="catGroup" value="${c?c.group:''}" placeholder="ex : Impôts">
     <label>Propriétaire</label>
@@ -1588,6 +1759,21 @@ function openCategoryModal(c=null){
       </div>
     </div>
     <div class="helper-note" id="modeHelp"></div>
+    <div id="scheduledWrap" style="${c&&c.mode==='echeance'?'display:none;':''}border-top:1px solid var(--line);margin-top:14px;padding-top:12px;">
+      <label style="margin-top:0;">Changement de montant programmé (optionnel)</label>
+      <div class="helper-note" style="margin-top:0;">Ex : un crédit à 300€/mois qui passera à 450€/mois à partir d'une date donnée.</div>
+      <div class="field-row" style="margin-top:8px;">
+        <div>
+          <label>À partir de</label>
+          <input type="month" id="catSchedFrom" value="${c&&c.scheduledChange?c.scheduledChange.fromKey:''}">
+        </div>
+        <div>
+          <label>Nouveau montant/mois (€)</label>
+          <input type="number" step="0.01" id="catSchedAmount" value="${c&&c.scheduledChange?c.scheduledChange.amount:''}">
+        </div>
+      </div>
+      <span class="link" id="catSchedClear" style="font-size:12px;">Effacer le changement programmé</span>
+    </div>
   `, `
     ${isEdit?'<button class="btn btn-danger" id="catDeleteBtn">Supprimer</button>':''}
     <button class="btn btn-primary" id="catSaveBtn">Enregistrer</button>
@@ -1597,9 +1783,13 @@ function openCategoryModal(c=null){
   document.querySelectorAll('#catTypeSeg button').forEach(b=>{
     b.onclick=()=>{ type=b.dataset.type; document.querySelectorAll('#catTypeSeg button').forEach(x=>x.classList.toggle('active',x===b)); };
   });
+  document.querySelectorAll('.icon-pick').forEach(b=>{
+    b.onclick = ()=>{ document.getElementById('catIcon').value = b.dataset.icon; };
+  });
   const modeSel = document.getElementById('catMode');
   const updateHelp = ()=>{
     document.getElementById('dueMonthWrap').style.display = modeSel.value==='echeance' ? '' : 'none';
+    document.getElementById('scheduledWrap').style.display = modeSel.value==='echeance' ? 'none' : '';
     const annual = parseFloat(document.getElementById('catAnnual').value)||0;
     if(modeSel.value==='echeance'){
       const dm = Number(document.getElementById('catDueMonth').value);
@@ -1611,6 +1801,10 @@ function openCategoryModal(c=null){
   modeSel.onchange = updateHelp;
   document.getElementById('catDueMonth')?.addEventListener('change', updateHelp);
   document.getElementById('catAnnual').addEventListener('input', updateHelp);
+  document.getElementById('catSchedClear').onclick = ()=>{
+    document.getElementById('catSchedFrom').value = '';
+    document.getElementById('catSchedAmount').value = '';
+  };
   updateHelp();
 
   document.getElementById('catSaveBtn').onclick = async ()=>{
@@ -1621,11 +1815,16 @@ function openCategoryModal(c=null){
     const dueMonth = mode==='echeance' ? Number(document.getElementById('catDueMonth').value) : null;
     const owner = document.getElementById('catOwner').value;
     const accountId = document.getElementById('catAccount').value || null;
+    const icon = document.getElementById('catIcon').value.trim() || null;
+    const schedFrom = document.getElementById('catSchedFrom').value;
+    const schedAmount = document.getElementById('catSchedAmount').value;
+    const scheduledChange = (mode==='mensuel' && schedFrom && schedAmount!=='')
+      ? {fromKey: schedFrom, amount: Number(schedAmount)} : null;
     if(!name){ toast('Le nom est requis'); return; }
     if(isEdit){
-      Object.assign(c, {name, group, annual, mode, dueMonth, type, owner, accountId});
+      Object.assign(c, {name, group, annual, mode, dueMonth, type, owner, accountId, icon, scheduledChange});
     } else {
-      STATE.config.categories.push({id:uid(), type, name, group, annual, mode, dueMonth, owner, accountId});
+      STATE.config.categories.push({id:uid(), type, name, group, annual, mode, dueMonth, owner, accountId, icon, scheduledChange});
     }
     await saveConfig();
     closeModal();
