@@ -783,6 +783,52 @@ function accountRemainingThisMonth(acc, year, month){
   const echeance = accountEcheanceReserve(acc);
   return mensuel + echeance;
 }
+// Détail ligne par ligne de ce qui compose le montant "à prévoir" d'un compte ce mois-ci :
+// pour chaque catégorie mensuelle liée, ce qu'il reste à dépenser ; pour chaque échéance liée,
+// ce qui devrait déjà être provisionné à ce jour.
+function accountRemainingBreakdown(acc, year, month){
+  const today = new Date();
+  const lines = [];
+  STATE.config.categories.filter(c=>c.type==='depense' && c.mode==='mensuel' && c.accountId===acc.id).forEach(c=>{
+    const prevu = monthlyPrevu(c, year, month);
+    const reel = monthlyReel(c, year, month);
+    const restant = Math.max(0, prevu - reel);
+    if(restant > 0.5){
+      lines.push({ cat:c, kind:'mensuel', amount:restant, detail:`Reste à dépenser sur ${fmt(prevu)} prévu ce mois (${fmt(reel)} déjà dépensé)` });
+    }
+  });
+  STATE.config.categories.filter(c=>c.type==='depense' && c.mode==='echeance' && c.accountId===acc.id).forEach(c=>{
+    const cible = cibleCumulee(c, today);
+    const depense = sommeCategorie(year, c.id, 'depense', todayISO());
+    const reserve = Math.max(0, cible - depense);
+    if(reserve > 0.5){
+      lines.push({ cat:c, kind:'echeance', amount:reserve, detail:`À provisionner pour l'échéance de ${MONTHS[c.dueMonth-1]} (${fmt(depense)} déjà mis de côté sur ${fmt(effectiveAnnual(c,year))})` });
+    }
+  });
+  lines.sort((a,b)=>b.amount-a.amount);
+  return lines;
+}
+function renderAccountBreakdownModal(accId, year, month){
+  const acc = accById(accId);
+  if(!acc) return;
+  const lines = accountRemainingBreakdown(acc, year, month);
+  const total = lines.reduce((s,l)=>s+l.amount,0);
+  const rows = lines.map(l=>`
+    <div class="tx-row" style="cursor:default;">
+      <div class="tx-mid">
+        <div class="tx-cat">${iconChip(l.cat)}${l.cat.name} <span class="owner-tag amelia">${l.kind==='mensuel'?'mensuel':'échéance'}</span></div>
+        <div class="tx-meta">${l.detail}</div>
+      </div>
+      <div class="tx-amt">${fmt(l.amount)}</div>
+    </div>`).join('') || `<div class="empty-state" style="padding:16px;"><p>Rien à provisionner sur ce compte ce mois-ci.</p></div>`;
+  openModal(`À prévoir — ${acc.name}`, `
+    <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;padding-bottom:10px;border-bottom:1px solid var(--line);">
+      <span style="font-size:13px;color:var(--ink-faint);">Total à prévoir ce mois-ci</span>
+      <span style="font-size:20px;font-weight:700;">${fmt(total)}</span>
+    </div>
+    ${rows}
+  `);
+}
 // Préférence d'affichage (par navigateur) : quels comptes montrer dans le tableau de bord.
 function getDashboardAccountFilter(){
   try {
@@ -813,11 +859,11 @@ function renderAccountBarChart(accounts, year, month){
         <div style="width:22px;height:130px;background:#EDEAE0;border-radius:6px 6px 0 0;display:flex;align-items:flex-end;overflow:hidden;" title="Réel : ${fmt(d.reel)}">
           <div style="width:100%;height:${hReel}%;background:${ok?'var(--accent)':'#D96C6C'};border-radius:6px 6px 0 0;transition:height .4s ease;"></div>
         </div>
-        <div style="width:22px;height:130px;background:#EDEAE0;border-radius:6px 6px 0 0;display:flex;align-items:flex-end;overflow:hidden;" title="À prévoir : ${fmt(d.prevu)}">
+        <div class="acct-prevu-bar" data-acc-id="${d.id}" style="width:22px;height:130px;background:#EDEAE0;border-radius:6px 6px 0 0;display:flex;align-items:flex-end;overflow:hidden;cursor:pointer;" title="À prévoir : ${fmt(d.prevu)} — cliquer pour le détail">
           <div style="width:100%;height:${hPrevu}%;background:#C9B98A;border-radius:6px 6px 0 0;transition:height .4s ease;"></div>
         </div>
       </div>
-      <div style="font-size:10px;color:var(--ink-faint);text-align:center;white-space:nowrap;">${fmt(d.reel)} / ${fmt(d.prevu)}</div>
+      <div class="acct-prevu-label" data-acc-id="${d.id}" style="font-size:10px;color:var(--ink-faint);text-align:center;white-space:nowrap;cursor:pointer;" title="Voir le détail du montant à prévoir">${fmt(d.reel)} / <u>${fmt(d.prevu)}</u></div>
       <div style="font-size:10.5px;font-weight:600;color:var(--ink-soft);text-align:center;max-width:88px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${d.name}">${d.name}</div>
     </div>`;
   }).join('');
@@ -851,9 +897,9 @@ function renderAccountMonthlyCard(year, month){
     const delta = reel - necessaire;
     const owner = ownerOf(a);
     const ownerTag = owner!=='commun' ? `<span class="owner-tag ${owner}">${OWNER_LABEL[owner]}</span>` : '';
-    return `<div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px;">
+    return `<div class="acct-delta-row" data-acc-id="${a.id}" style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--line);font-size:12.5px;cursor:pointer;">
       <span>${a.name} ${ownerTag}</span>
-      <span class="${delta>=0?'good':'bad'}" style="font-weight:600;">${delta>=0?'Marge de '+fmt(delta):'Il manque '+fmt(-delta)}</span>
+      <span class="${delta>=0?'good':'bad'}" style="font-weight:600;">${delta>=0?'Marge de '+fmt(delta):'Il manque '+fmt(-delta)} <span style="color:var(--ink-faint);font-weight:400;">— détail</span></span>
     </div>`;
   }).join('');
   return `
@@ -864,12 +910,12 @@ function renderAccountMonthlyCard(year, month){
       ${deltaList ? `<div style="margin-top:14px;">${deltaList}</div>` : ''}
       <details style="margin-top:10px;">
         <summary style="cursor:pointer;font-size:11.5px;color:var(--ink-faint);">ℹ️ Comment lire ce graphique ?</summary>
-        <div class="helper-note" style="margin-top:6px;">« À prévoir » = ce qu'il reste à dépenser ce mois sur les catégories liées à ce compte, plus ce qui devrait déjà être mis de côté pour les échéances liées. Cliquez sur un compte pour l'afficher ou le masquer.</div>
+        <div class="helper-note" style="margin-top:6px;">« À prévoir » = ce qu'il reste à dépenser ce mois sur les catégories liées à ce compte, plus ce qui devrait déjà être mis de côté pour les échéances liées. Cliquez sur les chips en haut pour afficher/masquer un compte, ou sur sa barre « à prévoir »/son montant pour voir le détail.</div>
       </details>
     </div>
   `;
 }
-function wireAccountMonthlyCardEvents(){
+function wireAccountMonthlyCardEvents(year, month){
   document.querySelectorAll('.acct-chip').forEach(b=>{
     b.onclick = ()=>{
       const all = STATE.config.accounts.map(a=>a.id);
@@ -884,6 +930,9 @@ function wireAccountMonthlyCardEvents(){
       setDashboardAccountFilter(next.length===all.length ? null : next);
       renderDashboard();
     };
+  });
+  document.querySelectorAll('.acct-prevu-bar, .acct-prevu-label, .acct-delta-row').forEach(el=>{
+    el.onclick = ()=> renderAccountBreakdownModal(el.dataset.accId, year, month);
   });
 }
 
@@ -1137,7 +1186,7 @@ function renderDashboard(){
   document.getElementById('monthNext').onclick = ()=>{ STATE.currentMonth = STATE.currentMonth>=12?1:STATE.currentMonth+1; renderDashboard(); };
   wireMonthlyBilanEvents(year, month);
   wirePendingTransferEvents();
-  wireAccountMonthlyCardEvents();
+  wireAccountMonthlyCardEvents(year, month);
 }
 
 function groupAndRenderGauges(depCats, year, focusDate, todayISOv){
