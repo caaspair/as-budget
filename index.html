@@ -526,6 +526,17 @@ async function importAllData(file){
 function allCategories(){ return [...STATE.config.categories, UNCAT_DEP, UNCAT_REV]; }
 function catById(id){ return allCategories().find(c=>c.id===id); }
 function accById(id){ return STATE.config.accounts.find(a=>a.id===id); }
+function defaultSourceAccountForCategory(catId){
+  const txs = [];
+  Object.values(STATE.txByYear||{}).forEach(list=>(list||[]).forEach(t=>{
+    if(t.type==='depense' && t.categoryId===catId) txs.push(t);
+  }));
+  txs.sort((a,b)=> a.date < b.date ? 1 : -1);
+  if(txs.length) return txs[0].accountId;
+  const cat = STATE.config.categories.find(c=>c.id===catId);
+  const scopeAccs = STATE.config.accounts.filter(a=>ownerOf(a)===ownerOf(cat));
+  return (scopeAccs[0] || STATE.config.accounts[0] || {}).id || null;
+}
 
 /* ============================= CALCULS BUDGET ============================= */
 // Icônes & couleurs (aspect visuel)
@@ -837,6 +848,7 @@ function renderDashboard(){
   const gaugesHTML = groupAndRenderGauges(depCats, year, focusDate, todayISOv);
   const bilanHTML = renderMonthlyBilanRows(year, month);
   const echeanceReconcileHTML = renderEcheanceReconciliationCard(year);
+  const pendingTransfersHTML = renderPendingTransfersCard();
 
   el.innerHTML = `
     <div class="topbar">
@@ -870,6 +882,7 @@ function renderDashboard(){
       </div>
 
       ${echeanceReconcileHTML}
+      ${pendingTransfersHTML}
 
       <div class="stat-row">
         <div class="stat-box">
@@ -907,6 +920,7 @@ function renderDashboard(){
   document.getElementById('monthPrev').onclick = ()=>{ STATE.currentMonth = STATE.currentMonth<=1?12:STATE.currentMonth-1; renderDashboard(); };
   document.getElementById('monthNext').onclick = ()=>{ STATE.currentMonth = STATE.currentMonth>=12?1:STATE.currentMonth+1; renderDashboard(); };
   wireMonthlyBilanEvents(year, month);
+  wirePendingTransferEvents();
 }
 
 function groupAndRenderGauges(depCats, year, focusDate, todayISOv){
@@ -1055,12 +1069,101 @@ function renderEcheanceReconciliationCard(year){
     <div class="helper-note">Ces échéances sont passées cette année — dis-nous quoi faire de l'écart avant de passer à autre chose.</div>
   `;
 }
+
+/* ---- Virements à faire (suite à une décision "Épargne") ---- */
+function pendingTransfers(){
+  const list = [];
+  STATE.config.categories.forEach(cat=>{
+    Object.entries(cat.rollover||{}).forEach(([key,entry])=>{
+      if(entry && entry.choice==='epargne' && entry.fromAccountId && entry.toAccountId && entry.fromAccountId!==entry.toAccountId && !entry.transferDone){
+        list.push({catId:cat.id, catName:cat.name, key, kind:'mensuel', amount:entry.amount, fromAccountId:entry.fromAccountId, toAccountId:entry.toAccountId});
+      }
+    });
+    Object.entries(cat.yearlyRollover||{}).forEach(([year,entry])=>{
+      if(entry && entry.choice==='epargne' && entry.fromAccountId && entry.toAccountId && entry.fromAccountId!==entry.toAccountId && !entry.transferDone){
+        list.push({catId:cat.id, catName:cat.name, key:year, kind:'annuel', amount:entry.amount, fromAccountId:entry.fromAccountId, toAccountId:entry.toAccountId});
+      }
+    });
+  });
+  return list;
+}
+function renderPendingTransfersCard(){
+  const pending = pendingTransfers();
+  if(!pending.length) return '';
+  const rows = pending.map(p=>{
+    const from = accById(p.fromAccountId);
+    const to = accById(p.toAccountId);
+    return `<div class="gauge-item">
+      <div class="gauge-top">
+        <div class="gauge-name">💸 ${p.catName}</div>
+        <div class="gauge-figures">${fmt(p.amount)}</div>
+      </div>
+      <div class="gauge-delta">Du compte <strong>${from?from.name:'compte inconnu'}</strong> vers <strong>${to?to.name:'compte inconnu'}</strong></div>
+      <div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;">
+        <button class="btn btn-primary btn-sm mark-transfer-done" data-cat="${p.catId}" data-kind="${p.kind}" data-key="${p.key}">J'ai fait le virement</button>
+        <span class="link cancel-transfer" data-cat="${p.catId}" data-kind="${p.kind}" data-key="${p.key}" style="font-size:12px;align-self:center;">annuler ce virement suggéré</span>
+      </div>
+    </div>`;
+  }).join('');
+  return `
+    <div class="card">
+      <div class="card-title">💸 Virements à faire</div>
+      ${rows}
+    </div>
+    <div class="helper-note">Ces montants viennent de vos décisions "Garder en épargne". Faites le virement dans votre banque, puis cliquez sur "J'ai fait le virement" : il sera enregistré et remis à zéro ici.</div>
+  `;
+}
+function wirePendingTransferEvents(){
+  document.querySelectorAll('.mark-transfer-done').forEach(b=>{
+    b.onclick = async ()=>{
+      const cat = STATE.config.categories.find(c=>c.id===b.dataset.cat);
+      const entry = b.dataset.kind==='mensuel' ? (cat.rollover||{})[b.dataset.key] : (cat.yearlyRollover||{})[b.dataset.key];
+      if(!entry) return;
+      const year = b.dataset.kind==='mensuel' ? Number(String(b.dataset.key).split('-')[0]) : Number(b.dataset.key);
+      await ensureYearLoaded(year);
+      STATE.txByYear[year] = STATE.txByYear[year] || [];
+      STATE.txByYear[year].push({
+        id: uid(), date: todayISO(), amount: Number(entry.amount), type:'virement',
+        fromAccountId: entry.fromAccountId, toAccountId: entry.toAccountId,
+        note: `Virement épargne — ${cat.name}`
+      });
+      await saveYear(year);
+      entry.transferDone = true;
+      await saveConfig();
+      toast('Virement enregistré — montant à virer remis à zéro');
+      renderDashboard();
+    };
+  });
+  document.querySelectorAll('.cancel-transfer').forEach(b=>{
+    b.onclick = async ()=>{
+      const cat = STATE.config.categories.find(c=>c.id===b.dataset.cat);
+      const store = b.dataset.kind==='mensuel' ? cat.rollover : cat.yearlyRollover;
+      if(store && store[b.dataset.key]){
+        delete store[b.dataset.key].fromAccountId;
+        delete store[b.dataset.key].toAccountId;
+        delete store[b.dataset.key].transferDone;
+      }
+      await saveConfig();
+      toast('Virement suggéré annulé (la décision Épargne reste enregistrée)');
+      renderDashboard();
+    };
+  });
+}
 function wireMonthlyBilanEvents(year, month){
   document.querySelectorAll('.rollover-btn').forEach(b=>{
     b.onclick = async ()=>{
       const cat = STATE.config.categories.find(c=>c.id===b.dataset.cat);
       cat.rollover = cat.rollover || {};
-      cat.rollover[b.dataset.key] = {amount: Number(b.dataset.amount), choice: b.dataset.choice};
+      const entry = {amount: Number(b.dataset.amount), choice: b.dataset.choice};
+      if(b.dataset.choice==='epargne' && cat.accountId){
+        const fromAcc = defaultSourceAccountForCategory(cat.id);
+        if(fromAcc && fromAcc!==cat.accountId){
+          entry.fromAccountId = fromAcc;
+          entry.toAccountId = cat.accountId;
+          entry.transferDone = false;
+        }
+      }
+      cat.rollover[b.dataset.key] = entry;
       await saveConfig();
       toast(b.dataset.choice==='epargne' ? 'Excédent mis en épargne' : 'Ajouté au budget du mois prochain');
       renderDashboard();
@@ -1085,7 +1188,16 @@ function wireMonthlyBilanEvents(year, month){
     b.onclick = async ()=>{
       const cat = STATE.config.categories.find(c=>c.id===b.dataset.cat);
       cat.yearlyRollover = cat.yearlyRollover || {};
-      cat.yearlyRollover[b.dataset.year] = {amount: Number(b.dataset.amount), choice: b.dataset.choice};
+      const entry = {amount: Number(b.dataset.amount), choice: b.dataset.choice};
+      if(b.dataset.choice==='epargne' && cat.accountId){
+        const fromAcc = defaultSourceAccountForCategory(cat.id);
+        if(fromAcc && fromAcc!==cat.accountId){
+          entry.fromAccountId = fromAcc;
+          entry.toAccountId = cat.accountId;
+          entry.transferDone = false;
+        }
+      }
+      cat.yearlyRollover[b.dataset.year] = entry;
       await saveConfig();
       toast(b.dataset.choice==='epargne' ? 'Mis en épargne' : "Ajouté au budget de l'année prochaine");
       renderDashboard();
