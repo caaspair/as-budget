@@ -649,6 +649,7 @@ function effectiveAnnual(cat, year){
 function baseMonthlyAmount(cat, year, month){
   const key = monthKey(year, month);
   if(cat.overrides && cat.overrides[key]!=null && cat.overrides[key]!=='') return Number(cat.overrides[key]);
+  if(cat.startKey && key < cat.startKey) return 0;
   if(isScheduledChangeActive(cat, key)){
     return Number(cat.scheduledChange.amount);
   }
@@ -670,16 +671,25 @@ function cibleCumulee(cat, date){
   const doy = dayOfYear(date);
   const totalDays = daysInYear(y);
   if(cat.mode === 'mensuel'){
-    // Sans changement programmé / dépense temporaire : proration simple sur l'année.
-    if(!cat.scheduledChange || !cat.scheduledChange.fromKey) return annual * (doy/totalDays);
-    // Avec une période définie (dépense temporaire ou changement daté) : on additionne mois par mois,
-    // en utilisant le montant de la période quand elle est active, sinon le montant de base.
+    const hasSchedule = cat.scheduledChange && cat.scheduledChange.fromKey;
+    const hasStart = !!cat.startKey;
+    // Sans changement programmé / date de début / dépense temporaire : proration simple sur l'année.
+    if(!hasSchedule && !hasStart) return annual * (doy/totalDays);
+    // Avec une période définie (dépense temporaire, changement daté, ou date de début) : on additionne
+    // mois par mois, en utilisant le montant qui s'applique à chacun (0 avant la date de début).
     let total = 0;
     for(let m=1; m<=12; m++){
       const monthStart = new Date(y, m-1, 1);
       if(monthStart > date) break;
       const key = monthKey(y, m);
-      const amt = isScheduledChangeActive(cat, key) ? Number(cat.scheduledChange.amount) : annual/12;
+      let amt;
+      if(hasStart && key < cat.startKey){
+        amt = 0;
+      } else if(isScheduledChangeActive(cat, key)){
+        amt = Number(cat.scheduledChange.amount);
+      } else {
+        amt = annual/12;
+      }
       const isCurrentMonth = date.getFullYear()===y && date.getMonth()+1===m;
       if(isCurrentMonth){
         const daysInMonth = new Date(y, m, 0).getDate();
@@ -702,6 +712,11 @@ function mensualiteConseillee(cat, year){
   return annual / cat.dueMonth;
 }
 function monthKey(year, month){ return `${year}-${String(month).padStart(2,'0')}`; }
+function formatMonthKey(key){
+  if(!key) return '';
+  const [y,m] = key.split('-').map(Number);
+  return `${MONTHS[m-1]} ${y}`;
+}
 function monthsBetweenInclusive(fromKey, toKey){
   const [fy,fm] = fromKey.split('-').map(Number);
   const [ty,tm] = toKey.split('-').map(Number);
@@ -2123,10 +2138,13 @@ function budgetRow(c){
   const eff = effectiveAnnual(c, y);
   const isPonctuel = c.mode==='mensuel' && Number(c.annual||0)===0 && c.scheduledChange && c.scheduledChange.toKey;
   const hasSched = c.scheduledChange && c.scheduledChange.fromKey && !isPonctuel;
-  const tag = isPonctuel ? ' <span class="owner-tag amelia">ponctuel</span>' : (hasSched ? ' <span class="owner-tag amelia">changement programmé</span>' : '');
+  const hasStart = !isPonctuel && !!c.startKey;
+  const tag = isPonctuel ? ' <span class="owner-tag amelia">ponctuel</span>' : (hasSched ? ' <span class="owner-tag amelia">changement programmé</span>' : '')
+    + (hasStart ? ` <span class="owner-tag amelia">depuis ${formatMonthKey(c.startKey)}</span>` : '');
   const meta = isPonctuel
     ? `Ponctuel · ${fmt(c.scheduledChange.amount)}/mois de ${c.scheduledChange.fromKey} à ${c.scheduledChange.toKey}`
-    : (c.mode==='mensuel' ? 'Lissé sur l’année · '+fmt(eff/12)+'/mois' : 'Échéance en '+MONTHS[c.dueMonth-1]+' · à provisionner '+fmt(mensualiteConseillee(c,y))+'/mois');
+    : (c.mode==='mensuel' ? 'Lissé sur l’année · '+fmt(eff/12)+'/mois' : 'Échéance en '+MONTHS[c.dueMonth-1]+' · à provisionner '+fmt(mensualiteConseillee(c,y))+'/mois')
+      + (hasStart ? ` · démarre en ${formatMonthKey(c.startKey)}, sans fin` : '');
   const acc = c.accountId ? accById(c.accountId) : null;
   const accountMeta = acc
     ? `<div class="tx-meta" style="margin-top:2px;color:var(--accent);">🔗 ${acc.name}</div>`
@@ -2206,6 +2224,11 @@ function openCategoryModal(c=null){
         </div>
       </div>
       <div class="helper-note" id="modeHelp"></div>
+      <div id="catStartWrap" style="${c&&c.mode==='echeance'?'display:none;':''}border-top:1px solid var(--line);margin-top:14px;padding-top:12px;">
+        <label style="margin-top:0;">Ce poste démarre à partir d'un mois précis (optionnel)</label>
+        <div class="helper-note" style="margin-top:0;">Laissez vide si ça existe depuis toujours. Sinon, rien ne sera compté avant ce mois — et le montant ci-dessus s'appliquera ensuite pour toujours, sans date de fin (ex : nouvel abonnement souscrit en octobre).</div>
+        <input type="month" id="catStartFrom" value="${c&&c.startKey?c.startKey:''}" style="margin-top:8px;">
+      </div>
       <div id="permChangeWrap" style="${c&&c.mode==='echeance'?'display:none;':''}border-top:1px solid var(--line);margin-top:14px;padding-top:12px;">
         <label style="margin-top:0;">Changement de montant programmé (optionnel)</label>
         <div class="helper-note" style="margin-top:0;">Pour un montant qui change de façon définitive à partir d'une date (ex : crédit qui passe à 450€/mois pour toujours).</div>
@@ -2276,6 +2299,7 @@ function openCategoryModal(c=null){
     const isEch = modeSel.value==='echeance';
     document.getElementById('dueMonthWrap').style.display = isEch ? '' : 'none';
     document.getElementById('permChangeWrap').style.display = isEch ? 'none' : '';
+    document.getElementById('catStartWrap').style.display = isEch ? 'none' : '';
     document.getElementById('catMonthlyWrap').style.display = isEch ? 'none' : '';
     const annual = parseFloat(catAnnualEl.value)||0;
     if(isEch){
@@ -2358,7 +2382,7 @@ function openCategoryModal(c=null){
     const icon = document.getElementById('catIcon').value.trim() || null;
     if(!name){ toast('Le nom est requis'); return; }
 
-    let annual, mode, dueMonth, scheduledChange;
+    let annual, mode, dueMonth, scheduledChange, startKey;
     if(duration==='ponctuel'){
       const from = ponctFromEl.value, to = ponctToEl.value;
       const amountRaw = ponctAmountEl.value;
@@ -2369,6 +2393,7 @@ function openCategoryModal(c=null){
       const monthlyAmt = ponctAmountMode==='total' ? Number(amountRaw)/n : Number(amountRaw);
       mode = 'mensuel'; annual = 0; dueMonth = null;
       scheduledChange = {fromKey: from, toKey: to, amount: monthlyAmt};
+      startKey = null;
     } else {
       annual = parseFloat(document.getElementById('catAnnual').value)||0;
       mode = document.getElementById('catMode').value;
@@ -2377,12 +2402,14 @@ function openCategoryModal(c=null){
       const schedAmountRaw = document.getElementById('catSchedAmount').value;
       scheduledChange = (mode==='mensuel' && schedFrom && schedAmountRaw!=='')
         ? {fromKey: schedFrom, toKey: null, amount: Number(schedAmountRaw)} : null;
+      const startFrom = document.getElementById('catStartFrom').value;
+      startKey = (mode==='mensuel' && startFrom) ? startFrom : null;
     }
 
     if(isEdit){
-      Object.assign(c, {name, group, annual, mode, dueMonth, type, owner, accountId, icon, scheduledChange});
+      Object.assign(c, {name, group, annual, mode, dueMonth, type, owner, accountId, icon, scheduledChange, startKey});
     } else {
-      STATE.config.categories.push({id:uid(), type, name, group, annual, mode, dueMonth, owner, accountId, icon, scheduledChange});
+      STATE.config.categories.push({id:uid(), type, name, group, annual, mode, dueMonth, owner, accountId, icon, scheduledChange, startKey});
     }
     await saveConfig();
     closeModal();
