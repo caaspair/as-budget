@@ -2047,13 +2047,18 @@ function budgetRow(c){
   const owner = ownerOf(c);
   const y = new Date().getFullYear();
   const eff = effectiveAnnual(c, y);
-  const hasSched = c.scheduledChange && c.scheduledChange.fromKey;
+  const isPonctuel = c.mode==='mensuel' && Number(c.annual||0)===0 && c.scheduledChange && c.scheduledChange.toKey;
+  const hasSched = c.scheduledChange && c.scheduledChange.fromKey && !isPonctuel;
+  const tag = isPonctuel ? ' <span class="owner-tag amelia">ponctuel</span>' : (hasSched ? ' <span class="owner-tag amelia">changement programmé</span>' : '');
+  const meta = isPonctuel
+    ? `Ponctuel · ${fmt(c.scheduledChange.amount)}/mois de ${c.scheduledChange.fromKey} à ${c.scheduledChange.toKey}`
+    : (c.mode==='mensuel' ? 'Lissé sur l’année · '+fmt(eff/12)+'/mois' : 'Échéance en '+MONTHS[c.dueMonth-1]+' · à provisionner '+fmt(mensualiteConseillee(c,y))+'/mois');
   return `<div class="tx-row cat-row" data-id="${c.id}" style="cursor:pointer;">
     <div class="tx-mid">
-      <div class="tx-cat">${iconChip(c)}${c.name} ${owner!=='commun'?`<span class="owner-tag ${owner}">${OWNER_LABEL[owner]}</span>`:''}${hasSched?' <span class="owner-tag amelia">changement programmé</span>':''}</div>
-      <div class="tx-meta">${c.mode==='mensuel' ? 'Lissé sur l’année · '+fmt(eff/12)+'/mois' : 'Échéance en '+MONTHS[c.dueMonth-1]+' · à provisionner '+fmt(mensualiteConseillee(c,y))+'/mois'}</div>
+      <div class="tx-cat">${iconChip(c)}${c.name} ${owner!=='commun'?`<span class="owner-tag ${owner}">${OWNER_LABEL[owner]}</span>`:''}${tag}</div>
+      <div class="tx-meta">${meta}</div>
     </div>
-    <div class="tx-amt">${fmt(eff)}</div>
+    <div class="tx-amt">${fmt(isPonctuel ? c.scheduledChange.amount*monthsBetweenInclusive(c.scheduledChange.fromKey,c.scheduledChange.toKey) : eff)}</div>
   </div>`;
 }
 function openCategoryModal(c=null){
@@ -2082,62 +2087,86 @@ function openCategoryModal(c=null){
       <option value="moi" ${c&&ownerOf(c)==='moi'?'selected':''}>Scott</option>
       <option value="amelia" ${c&&ownerOf(c)==='amelia'?'selected':''}>Amélia</option>
     </select>
-    <div class="field-row">
-      <div>
-        <label>Montant annuel prévu (€)</label>
-        <input type="number" step="0.01" id="catAnnual" value="${c?c.annual:''}">
-      </div>
-      <div id="catMonthlyWrap" style="${c&&c.mode==='echeance'?'display:none;':''}">
-        <label>Montant mensuel (€)</label>
-        <input type="number" step="0.01" id="catMonthly" value="${c&&c.mode!=='echeance'?(Number(c.annual||0)/12).toFixed(2):''}">
-      </div>
-    </div>
-    <div class="helper-note" style="margin-top:-6px;">Remplissez l'un ou l'autre, ils se recalculent automatiquement entre eux.</div>
     <label>Compte associé (optionnel)</label>
     <select id="catAccount">
       <option value="">Aucun</option>
       ${STATE.config.accounts.map(a=>`<option value="${a.id}" ${c&&c.accountId===a.id?'selected':''}>${a.name}</option>`).join('')}
     </select>
     <div class="helper-note">Utile pour savoir combien un compte précis doit contenir (ex : Voyage → Compte commun épargne).</div>
-    <div class="field-row">
-      <div>
-        <label>Mode</label>
-        <select id="catMode">
-          <option value="mensuel" ${(!c||c.mode==='mensuel')?'selected':''}>Lissé chaque mois</option>
-          <option value="echeance" ${c&&c.mode==='echeance'?'selected':''}>Échéance annuelle</option>
-        </select>
+
+    <label>Durée</label>
+    <div class="seg" id="catDurationSeg">
+      <button type="button" data-duration="permanent" class="active">Permanent</button>
+      <button type="button" data-duration="ponctuel">Ponctuel (nouveau)</button>
+    </div>
+    <div class="helper-note" id="durationHelp" style="margin-top:6px;"></div>
+
+    <div id="permanentWrap">
+      <div class="field-row">
+        <div>
+          <label>Montant annuel prévu (€)</label>
+          <input type="number" step="0.01" id="catAnnual" value="${c?c.annual:''}">
+        </div>
+        <div id="catMonthlyWrap" style="${c&&c.mode==='echeance'?'display:none;':''}">
+          <label>Montant mensuel (€)</label>
+          <input type="number" step="0.01" id="catMonthly" value="${c&&c.mode!=='echeance'?(Number(c.annual||0)/12).toFixed(2):''}">
+        </div>
       </div>
-      <div id="dueMonthWrap" style="${c&&c.mode==='echeance'?'':'display:none;'}">
-        <label>Mois de l'échéance</label>
-        <select id="catDueMonth">${MONTHS.map((m,i)=>`<option value="${i+1}" ${c&&c.dueMonth===i+1?'selected':''}>${m.charAt(0).toUpperCase()+m.slice(1)}</option>`).join('')}</select>
+      <div class="helper-note" style="margin-top:-6px;">Remplissez l'un ou l'autre, ils se recalculent automatiquement entre eux.</div>
+      <div class="field-row">
+        <div>
+          <label>Mode</label>
+          <select id="catMode">
+            <option value="mensuel" ${(!c||c.mode==='mensuel')?'selected':''}>Lissé chaque mois</option>
+            <option value="echeance" ${c&&c.mode==='echeance'?'selected':''}>Échéance annuelle</option>
+          </select>
+        </div>
+        <div id="dueMonthWrap" style="${c&&c.mode==='echeance'?'':'display:none;'}">
+          <label>Mois de l'échéance</label>
+          <select id="catDueMonth">${MONTHS.map((m,i)=>`<option value="${i+1}" ${c&&c.dueMonth===i+1?'selected':''}>${m.charAt(0).toUpperCase()+m.slice(1)}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="helper-note" id="modeHelp"></div>
+      <div id="permChangeWrap" style="${c&&c.mode==='echeance'?'display:none;':''}border-top:1px solid var(--line);margin-top:14px;padding-top:12px;">
+        <label style="margin-top:0;">Changement de montant programmé (optionnel)</label>
+        <div class="helper-note" style="margin-top:0;">Pour un montant qui change de façon définitive à partir d'une date (ex : crédit qui passe à 450€/mois pour toujours).</div>
+        <div class="field-row" style="margin-top:8px;">
+          <div>
+            <label>À partir de</label>
+            <input type="month" id="catSchedFrom" value="${c&&c.scheduledChange?c.scheduledChange.fromKey:''}">
+          </div>
+          <div>
+            <label>Nouveau montant/mois (€)</label>
+            <input type="number" step="0.01" id="catSchedAmount" value="${c&&c.scheduledChange?c.scheduledChange.amount:''}">
+          </div>
+        </div>
+        <span class="link" id="catSchedClear" style="font-size:12px;">Effacer le changement programmé</span>
       </div>
     </div>
-    <div class="helper-note" id="modeHelp"></div>
-    <div id="scheduledWrap" style="${c&&c.mode==='echeance'?'display:none;':''}border-top:1px solid var(--line);margin-top:14px;padding-top:12px;">
-      <label style="margin-top:0;">Dépense temporaire ou changement de montant (optionnel)</label>
-      <div class="helper-note" style="margin-top:0;">Pour une dépense qui ne dure qu'un temps (ex : impôts imprévus pendant 3 mois, ou 400€ à provisionner d'ici 4 mois) ou un changement définitif (ex : crédit qui augmente). Laissez "Jusqu'à" vide pour "pour toujours" (ex : crédit immobilier).</div>
+
+    <div id="ponctuelWrap" style="display:none;border-top:1px solid var(--line);margin-top:14px;padding-top:12px;">
+      <div class="helper-note" style="margin-top:0;">Une dépense qui vient de vous tomber dessus et qui ne durera qu'un temps (ex : assurance exceptionnelle de septembre à décembre, taxe imprévue). Elle sera répartie sur les mois choisis, puis disparaîtra du budget ensuite.</div>
       <div class="field-row" style="margin-top:8px;">
         <div>
           <label>À partir de</label>
-          <input type="month" id="catSchedFrom" value="${c&&c.scheduledChange?c.scheduledChange.fromKey:''}">
+          <input type="month" id="ponctFrom" value="${c&&c.scheduledChange&&c.scheduledChange.toKey?c.scheduledChange.fromKey:''}">
         </div>
         <div>
-          <label>Jusqu'à (vide = pour toujours)</label>
-          <input type="month" id="catSchedTo" value="${c&&c.scheduledChange?(c.scheduledChange.toKey||''):''}">
+          <label>Jusqu'à</label>
+          <input type="month" id="ponctTo" value="${c&&c.scheduledChange&&c.scheduledChange.toKey?c.scheduledChange.toKey:''}">
         </div>
       </div>
-      <div class="seg" id="schedAmountModeSeg" style="margin-top:10px;">
+      <div class="seg" id="ponctAmountModeSeg" style="margin-top:10px;">
         <button type="button" data-mode="monthly" class="active">Par mois</button>
         <button type="button" data-mode="total">Total sur la période</button>
       </div>
       <div class="field-row" style="margin-top:8px;">
         <div>
-          <label id="schedAmountLabel">Montant par mois (€)</label>
-          <input type="number" step="0.01" id="catSchedAmount" value="${c&&c.scheduledChange?c.scheduledChange.amount:''}">
+          <label id="ponctAmountLabel">Montant par mois (€)</label>
+          <input type="number" step="0.01" id="ponctAmount" value="${c&&c.scheduledChange&&c.scheduledChange.toKey?c.scheduledChange.amount:''}">
         </div>
       </div>
-      <div class="helper-note" id="schedAmountHelp" style="margin-top:0;"></div>
-      <span class="link" id="catSchedClear" style="font-size:12px;">Effacer</span>
+      <div class="helper-note" id="ponctAmountHelp" style="margin-top:0;"></div>
     </div>
   `, `
     ${isEdit?'<button class="btn btn-danger" id="catDeleteBtn">Supprimer</button>':''}
@@ -2167,7 +2196,7 @@ function openCategoryModal(c=null){
   const updateHelp = ()=>{
     const isEch = modeSel.value==='echeance';
     document.getElementById('dueMonthWrap').style.display = isEch ? '' : 'none';
-    document.getElementById('scheduledWrap').style.display = isEch ? 'none' : '';
+    document.getElementById('permChangeWrap').style.display = isEch ? 'none' : '';
     document.getElementById('catMonthlyWrap').style.display = isEch ? 'none' : '';
     const annual = parseFloat(catAnnualEl.value)||0;
     if(isEch){
@@ -2188,84 +2217,89 @@ function openCategoryModal(c=null){
     syncingAmounts = false;
     updateHelp();
   });
-  let schedAmountMode = 'monthly';
-  const schedFromEl = document.getElementById('catSchedFrom');
-  const schedToEl = document.getElementById('catSchedTo');
-  const schedAmountEl = document.getElementById('catSchedAmount');
-  const schedTotalBtn = document.querySelector('#schedAmountModeSeg button[data-mode="total"]');
-  const updateSchedHelp = ()=>{
-    const from = schedFromEl.value, to = schedToEl.value;
-    const val = parseFloat(schedAmountEl.value)||0;
-    const canUseTotal = !!(from && to);
-    schedTotalBtn.disabled = !canUseTotal;
-    schedTotalBtn.style.opacity = canUseTotal ? 1 : .4;
-    schedTotalBtn.style.cursor = canUseTotal ? 'pointer' : 'not-allowed';
-    if(schedAmountMode==='total' && !canUseTotal){
-      schedAmountMode = 'monthly';
-      document.querySelectorAll('#schedAmountModeSeg button').forEach(x=>x.classList.toggle('active', x.dataset.mode==='monthly'));
-    }
-    if(schedAmountMode==='total'){
-      document.getElementById('schedAmountLabel').textContent = 'Total sur la période (€)';
-      const n = monthsBetweenInclusive(from, to);
-      document.getElementById('schedAmountHelp').textContent = n>0 ? `Soit environ ${fmt(val/n)} par mois pendant ${n} mois.` : '';
+  document.getElementById('catSchedClear').onclick = ()=>{
+    document.getElementById('catSchedFrom').value = '';
+    document.getElementById('catSchedAmount').value = '';
+  };
+
+  // ---- Durée : Permanent vs Ponctuel (nouveau) ----
+  const isPonctuel = !!(c && c.mode==='mensuel' && Number(c.annual||0)===0 && c.scheduledChange && c.scheduledChange.toKey);
+  let duration = isPonctuel ? 'ponctuel' : 'permanent';
+  const permanentWrap = document.getElementById('permanentWrap');
+  const ponctuelWrap = document.getElementById('ponctuelWrap');
+  const durationHelp = document.getElementById('durationHelp');
+  const setDurationUI = ()=>{
+    document.querySelectorAll('#catDurationSeg button').forEach(b=> b.classList.toggle('active', b.dataset.duration===duration));
+    permanentWrap.style.display = duration==='permanent' ? '' : 'none';
+    ponctuelWrap.style.display = duration==='ponctuel' ? '' : 'none';
+    durationHelp.textContent = duration==='permanent'
+      ? "Une dépense ou un revenu récurrent, sans date de fin prévue (loyer, courses, salaire, crédit…)."
+      : "Une dépense qui vient d'apparaître et qui ne durera qu'un temps (impôt imprévu, réparation, assurance temporaire…) — elle sera répartie sur la période choisie puis disparaîtra du budget.";
+  };
+  document.querySelectorAll('#catDurationSeg button').forEach(b=>{
+    b.onclick = ()=>{ duration = b.dataset.duration; setDurationUI(); };
+  });
+  setDurationUI();
+
+  let ponctAmountMode = 'monthly';
+  const ponctFromEl = document.getElementById('ponctFrom');
+  const ponctToEl = document.getElementById('ponctTo');
+  const ponctAmountEl = document.getElementById('ponctAmount');
+  const updatePonctHelp = ()=>{
+    const from = ponctFromEl.value, to = ponctToEl.value;
+    const val = parseFloat(ponctAmountEl.value)||0;
+    const n = (from && to) ? monthsBetweenInclusive(from, to) : 0;
+    if(ponctAmountMode==='total'){
+      document.getElementById('ponctAmountLabel').textContent = 'Total sur la période (€)';
+      document.getElementById('ponctAmountHelp').textContent = n>0 ? `Soit environ ${fmt(val/n)} par mois pendant ${n} mois.` : "Renseignez d'abord les deux dates.";
     } else {
-      document.getElementById('schedAmountLabel').textContent = 'Montant par mois (€)';
-      if(from && to){
-        const n = monthsBetweenInclusive(from, to);
-        document.getElementById('schedAmountHelp').textContent = n>0 ? `Soit un total d'environ ${fmt(val*n)} sur ${n} mois.` : '';
-      } else if(from && !to){
-        document.getElementById('schedAmountHelp').textContent = `Ce montant s'appliquera pour toujours à partir de cette date.`;
-      } else {
-        document.getElementById('schedAmountHelp').textContent = '';
-      }
+      document.getElementById('ponctAmountLabel').textContent = 'Montant par mois (€)';
+      document.getElementById('ponctAmountHelp').textContent = n>0 ? `Soit un total d'environ ${fmt(val*n)} sur ${n} mois.` : '';
     }
   };
-  document.querySelectorAll('#schedAmountModeSeg button').forEach(b=>{
+  document.querySelectorAll('#ponctAmountModeSeg button').forEach(b=>{
     b.onclick = ()=>{
-      if(b.disabled) return;
-      schedAmountMode = b.dataset.mode;
-      document.querySelectorAll('#schedAmountModeSeg button').forEach(x=>x.classList.toggle('active', x===b));
-      updateSchedHelp();
+      ponctAmountMode = b.dataset.mode;
+      document.querySelectorAll('#ponctAmountModeSeg button').forEach(x=>x.classList.toggle('active', x===b));
+      updatePonctHelp();
     };
   });
-  schedFromEl.addEventListener('input', updateSchedHelp);
-  schedToEl.addEventListener('input', updateSchedHelp);
-  schedAmountEl.addEventListener('input', updateSchedHelp);
-  document.getElementById('catSchedClear').onclick = ()=>{
-    schedFromEl.value = '';
-    schedToEl.value = '';
-    schedAmountEl.value = '';
-    schedAmountMode = 'monthly';
-    document.querySelectorAll('#schedAmountModeSeg button').forEach(x=>x.classList.toggle('active', x.dataset.mode==='monthly'));
-    updateSchedHelp();
-  };
-  updateSchedHelp();
+  ponctFromEl.addEventListener('input', updatePonctHelp);
+  ponctToEl.addEventListener('input', updatePonctHelp);
+  ponctAmountEl.addEventListener('input', updatePonctHelp);
+  updatePonctHelp();
   updateHelp();
 
   document.getElementById('catSaveBtn').onclick = async ()=>{
     const name = document.getElementById('catName').value.trim();
     const groupSelVal = document.getElementById('catGroupSelect').value;
     const group = (groupSelVal==='__new__' ? document.getElementById('catGroupNew').value.trim() : groupSelVal) || 'Autres';
-    const annual = parseFloat(document.getElementById('catAnnual').value)||0;
-    const mode = document.getElementById('catMode').value;
-    const dueMonth = mode==='echeance' ? Number(document.getElementById('catDueMonth').value) : null;
     const owner = document.getElementById('catOwner').value;
     const accountId = document.getElementById('catAccount').value || null;
     const icon = document.getElementById('catIcon').value.trim() || null;
-    const schedFrom = document.getElementById('catSchedFrom').value;
-    const schedTo = document.getElementById('catSchedTo').value;
-    const schedAmountRaw = document.getElementById('catSchedAmount').value;
-    if(schedFrom && schedTo && schedTo < schedFrom){ toast('La date de fin doit être après la date de début'); return; }
-    let scheduledChange = null;
-    if(mode==='mensuel' && schedFrom && schedAmountRaw!==''){
-      let monthlyAmt = Number(schedAmountRaw);
-      if(schedAmountMode==='total' && schedTo){
-        const n = monthsBetweenInclusive(schedFrom, schedTo);
-        if(n>0) monthlyAmt = Number(schedAmountRaw) / n;
-      }
-      scheduledChange = {fromKey: schedFrom, toKey: schedTo || null, amount: monthlyAmt};
-    }
     if(!name){ toast('Le nom est requis'); return; }
+
+    let annual, mode, dueMonth, scheduledChange;
+    if(duration==='ponctuel'){
+      const from = ponctFromEl.value, to = ponctToEl.value;
+      const amountRaw = ponctAmountEl.value;
+      if(!from || !to){ toast('Renseignez les deux dates pour une dépense ponctuelle'); return; }
+      if(to < from){ toast('La date de fin doit être après la date de début'); return; }
+      if(amountRaw===''){ toast('Renseignez un montant'); return; }
+      const n = monthsBetweenInclusive(from, to);
+      const monthlyAmt = ponctAmountMode==='total' ? Number(amountRaw)/n : Number(amountRaw);
+      mode = 'mensuel'; annual = 0; dueMonth = null;
+      scheduledChange = {fromKey: from, toKey: to, amount: monthlyAmt};
+    } else {
+      annual = parseFloat(document.getElementById('catAnnual').value)||0;
+      mode = document.getElementById('catMode').value;
+      dueMonth = mode==='echeance' ? Number(document.getElementById('catDueMonth').value) : null;
+      const schedFrom = document.getElementById('catSchedFrom').value;
+      const schedAmountRaw = document.getElementById('catSchedAmount').value;
+      scheduledChange = (mode==='mensuel' && schedFrom && schedAmountRaw!=='')
+        ? {fromKey: schedFrom, toKey: null, amount: Number(schedAmountRaw)} : null;
+    }
+
     if(isEdit){
       Object.assign(c, {name, group, annual, mode, dueMonth, type, owner, accountId, icon, scheduledChange});
     } else {
